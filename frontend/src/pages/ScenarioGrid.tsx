@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Loader2, Check, RotateCcw, Save, TrendingUp, Sparkles } from 'lucide-react';
+import { Loader2, Check, RotateCcw, Save, TrendingUp, Sparkles, Database, X, ArrowRight } from 'lucide-react';
 import { api } from '../api';
-import type { Promo } from '../api';
+import type { Promo, LakebaseWrite } from '../api';
 import { useFilters } from '../store';
 import FilterBar from '../components/FilterBar';
 import { computeEcon } from '../format';
@@ -24,6 +24,10 @@ export default function ScenarioGrid() {
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
   const [savingAll, setSavingAll] = useState(false);
+  // What the last save wrote to Lakebase (shown in a dismissible panel).
+  const [lastSave, setLastSave] = useState<{
+    database: string; instance: string; writes: LakebaseWrite[]; promosSaved: number;
+  } | null>(null);
 
   const load = () => {
     setLoading(true);
@@ -58,7 +62,8 @@ export default function ScenarioGrid() {
     const econ = computeEcon(r, r.scenarioDiscount);
     setRows((prev) => prev.map((x) => x.promotion_id === r.promotion_id ? { ...x, saving: true } : x));
     try {
-      await api.saveScenario(String(r.promotion_id), r.scenarioDiscount, econ.trade_spend);
+      const res = await api.saveScenario(String(r.promotion_id), r.scenarioDiscount, econ.trade_spend);
+      setLastSave({ database: res.lakebase.database, instance: res.lakebase.instance, writes: res.lakebase.writes, promosSaved: 1 });
     } finally {
       load();
     }
@@ -69,10 +74,12 @@ export default function ScenarioGrid() {
     if (!dirty.length) return;
     setSavingAll(true);
     try {
+      let last;
       for (const r of dirty) {
         const econ = computeEcon(r, r.scenarioDiscount);
-        await api.saveScenario(String(r.promotion_id), r.scenarioDiscount, econ.trade_spend);
+        last = await api.saveScenario(String(r.promotion_id), r.scenarioDiscount, econ.trade_spend);
       }
+      if (last) setLastSave({ database: last.lakebase.database, instance: last.lakebase.instance, writes: last.lakebase.writes, promosSaved: dirty.length });
     } finally {
       setSavingAll(false);
       load();
@@ -112,6 +119,7 @@ export default function ScenarioGrid() {
           </button>
         </div>
         <ScenarioSummary totals={totals} />
+        {lastSave && <LakebaseWritePanel save={lastSave} onClose={() => setLastSave(null)} />}
         <FilterBar showStatus={false} />
       </div>
 
@@ -193,6 +201,61 @@ export default function ScenarioGrid() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function LakebaseWritePanel({ save, onClose }: {
+  save: { database: string; instance: string; writes: LakebaseWrite[]; promosSaved: number };
+  onClose: () => void;
+}) {
+  const opColor = (op: string) =>
+    op === 'INSERT' ? 'bg-emerald-100 text-emerald-700'
+      : op === 'UPSERT' ? 'bg-blue-100 text-blue-700'
+      : 'bg-zinc-100 text-zinc-700';
+  return (
+    <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-4">
+      <div className="flex items-start justify-between">
+        <div className="flex items-center gap-2">
+          <Check className="w-4 h-4 text-emerald-600" />
+          <p className="text-sm font-semibold text-[var(--text-primary)]">
+            Scenario saved to Lakebase
+            {save.promosSaved > 1 ? ` — ${save.promosSaved} promotions` : ''}
+          </p>
+        </div>
+        <button onClick={onClose} className="p-1 rounded text-[var(--text-secondary)] hover:text-[var(--text-primary)]"><X className="w-3.5 h-3.5" /></button>
+      </div>
+
+      <div className="flex items-center gap-1.5 text-[11px] text-[var(--text-secondary)] mt-1.5 ml-6">
+        <Database className="w-3 h-3" />
+        <span>instance <span className="font-mono text-[var(--text-primary)]">{save.instance}</span></span>
+        <ArrowRight className="w-3 h-3" />
+        <span>database <span className="font-mono text-[var(--text-primary)]">{save.database}</span></span>
+        <span className="text-[var(--text-secondary)]">· Postgres</span>
+      </div>
+
+      <div className="mt-3 ml-6 space-y-2">
+        {save.writes.map((wr, i) => (
+          <div key={i} className="flex items-start gap-2 text-xs">
+            <span className={`px-1.5 py-0.5 rounded font-mono font-semibold shrink-0 ${opColor(wr.operation)}`}>{wr.operation}</span>
+            <div className="min-w-0">
+              <span className="font-mono font-medium text-[var(--text-primary)]">public.{wr.table}</span>
+              <span className="text-[var(--text-secondary)]"> where {wr.row_key}</span>
+              <div className="text-[var(--text-secondary)] mt-0.5">
+                {Object.entries(wr.columns).map(([k, v], j) => (
+                  <span key={k}>
+                    {j > 0 && ', '}
+                    <span className="font-mono">{k}</span>=<span className="font-mono text-[var(--text-primary)]">{typeof v === 'number' ? v : `"${v}"`}</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+      <p className="text-[10px] text-[var(--text-secondary)] mt-3 ml-6">
+        Analytical promotion data stays in Unity Catalog; only operational plan state is written here. Track the full history under a promotion's Activity log.
+      </p>
     </div>
   );
 }

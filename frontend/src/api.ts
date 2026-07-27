@@ -168,6 +168,23 @@ export interface GenieRoom {
   description: string;
 }
 
+export interface LakebaseWrite {
+  table: string;
+  operation: string;
+  row_key: string;
+  columns: Record<string, any>;
+}
+
+export interface SaveScenarioResult {
+  ok: boolean;
+  state: PlanState;
+  lakebase: {
+    database: string;
+    instance: string;
+    writes: LakebaseWrite[];
+  };
+}
+
 export type Filters = {
   market?: string;
   channel?: string;
@@ -199,7 +216,7 @@ export const api = {
   approve: (promotion_id: string) => request<any>('/planning/approve', { method: 'POST', body: JSON.stringify({ promotion_id }) }),
   lock: (promotion_id: string, locked: boolean) => request<any>('/planning/lock', { method: 'POST', body: JSON.stringify({ promotion_id, locked }) }),
   adjustBudget: (promotion_id: string, adjusted_budget: number) => request<any>('/planning/budget', { method: 'POST', body: JSON.stringify({ promotion_id, adjusted_budget }) }),
-  saveScenario: (promotion_id: string, adjusted_discount: number, adjusted_budget?: number) => request<any>('/planning/scenario', { method: 'POST', body: JSON.stringify({ promotion_id, adjusted_discount, adjusted_budget }) }),
+  saveScenario: (promotion_id: string, adjusted_discount: number, adjusted_budget?: number) => request<SaveScenarioResult>('/planning/scenario', { method: 'POST', body: JSON.stringify({ promotion_id, adjusted_discount, adjusted_budget }) }),
   assign: (promotion_id: string, assigned_to: string) => request<any>('/planning/assign', { method: 'POST', body: JSON.stringify({ promotion_id, assigned_to }) }),
   addComment: (promotion_id: string, body: string) => request<any>('/planning/comment', { method: 'POST', body: JSON.stringify({ promotion_id, body }) }),
   getComments: (promotion_id: string) => request<{ comments: Comment[] }>(`/planning/${promotion_id}/comments`),

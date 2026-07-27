@@ -4,6 +4,7 @@ These persist the operational state a revenue manager creates while planning:
 plan status (approve / lock), budget adjustments, follow-up assignments, and comments.
 This is the transactional layer that sits alongside the analytical Unity Catalog data.
 """
+import os
 import uuid
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Request
@@ -207,7 +208,35 @@ async def save_scenario(req: ScenarioRequest, request: Request):
         await _log(conn, req.promotion_id, _actor(request), "scenario",
                    f"Discount set to {req.adjusted_discount:.0%}"
                    + (f", budget {req.adjusted_budget:,.0f}" if req.adjusted_budget is not None else ""))
-    return {"ok": True, "state": _state_dict(r)}
+    # Describe the Lakebase writes this call performed, so the UI can show exactly
+    # what was persisted (and where). These mirror the operations above verbatim.
+    writes = [
+        {
+            "table": "promo_plan_state",
+            "operation": "UPSERT",
+            "row_key": f"promotion_id = {req.promotion_id}",
+            "columns": {
+                "adjusted_discount": round(req.adjusted_discount, 4),
+                **({"adjusted_budget": round(req.adjusted_budget, 2)} if req.adjusted_budget is not None else {}),
+                "updated_by": _actor(request),
+            },
+        },
+        {
+            "table": "promo_activity",
+            "operation": "INSERT",
+            "row_key": f"promotion_id = {req.promotion_id}",
+            "columns": {"action": "scenario"},
+        },
+    ]
+    return {
+        "ok": True,
+        "state": _state_dict(r),
+        "lakebase": {
+            "database": os.environ.get("PGDATABASE", "promo_planner"),
+            "instance": os.environ.get("LAKEBASE_INSTANCE", "lakebase-demo"),
+            "writes": writes,
+        },
+    }
 
 
 class LockRequest(BaseModel):
