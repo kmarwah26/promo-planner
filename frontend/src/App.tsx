@@ -9,14 +9,14 @@ import type { CurrentUser } from './api';
 import CalendarView from './pages/CalendarView';
 import PromoList from './pages/PromoList';
 import ScenarioCompare from './pages/ScenarioCompare';
-import Copilot from './pages/Copilot';
+import GenieAgents from './pages/GenieAgents';
 import PromoDetail from './pages/PromoDetail';
 
 const nav = [
   { to: '/calendar', icon: CalendarDays, label: 'Planning Calendar' },
   { to: '/promos', icon: LayoutGrid, label: 'Promotions' },
   { to: '/scenario', icon: GitCompareArrows, label: 'Scenario Compare' },
-  { to: '/copilot', icon: MessageSquareText, label: 'Copilot' },
+  { to: '/genie-agents', icon: MessageSquareText, label: 'Genie Agents' },
 ];
 
 export default function App() {
@@ -39,7 +39,7 @@ export default function App() {
             <TrendingUp className="w-4 h-4 text-white" />
           </div>
           <div>
-            <h1 className="text-sm font-bold tracking-tight text-[var(--text-primary)] leading-none">Promotion Planning Copilot</h1>
+            <h1 className="text-sm font-bold tracking-tight text-[var(--text-primary)] leading-none">Promotion Planning Genie Agents</h1>
             <span className="text-[10px] text-[var(--text-secondary)]">Revenue Growth Management</span>
           </div>
         </Link>
@@ -79,7 +79,7 @@ export default function App() {
           <Route path="/promos" element={<PromoList />} />
           <Route path="/promos/:id" element={<PromoDetail />} />
           <Route path="/scenario" element={<ScenarioCompare />} />
-          <Route path="/copilot" element={<Copilot />} />
+          <Route path="/genie-agents" element={<GenieAgents />} />
         </Routes>
       </main>
     </div>
@@ -94,7 +94,7 @@ function Home({ user }: { user: CurrentUser | null }) {
     { to: '/calendar', icon: CalendarDays, title: '52-Week Planning Calendar', desc: 'See every promotion across the year by market, channel and brand. Color-coded by ROI.', color: 'from-indigo-500 to-indigo-700' },
     { to: '/promos', icon: LayoutGrid, title: 'Promotions Workspace', desc: 'Review, approve, adjust budgets, comment and lock promotion plans. Write-back to Lakebase.', color: 'from-blue-500 to-cyan-600' },
     { to: '/scenario', icon: GitCompareArrows, title: 'Scenario Comparison', desc: 'Baseline vs proposed on volume, margin, trade spend and ROI — across the portfolio.', color: 'from-fuchsia-500 to-pink-600' },
-    { to: '/copilot', icon: MessageSquareText, title: 'RGM Copilot', desc: 'Ask in plain English: "Which promos should we move from Q2 to Q3?" Powered by Genie.', color: 'from-violet-500 to-indigo-600' },
+    { to: '/genie-agents', icon: MessageSquareText, title: 'RGM Genie Agents', desc: 'Ask in plain English: "Which promos should we move from Q2 to Q3?" Powered by Genie.', color: 'from-violet-500 to-indigo-600' },
   ];
 
   const highlights = [
@@ -110,7 +110,7 @@ function Home({ user }: { user: CurrentUser | null }) {
           <Sparkles className="w-3.5 h-3.5" /> Promote with Purpose
         </span>
         <h2 className="text-4xl font-bold text-[var(--text-primary)] mb-3 tracking-tight">
-          {firstName ? `Welcome back, ${firstName}` : 'Promotion Planning Copilot'}
+          {firstName ? `Welcome back, ${firstName}` : 'Promotion Planning Genie Agents'}
         </h2>
         <p className="text-lg text-[var(--text-secondary)] max-w-2xl leading-relaxed">
           Plan, compare and approve trade promotions with granular ROI in view — then act on them
@@ -120,8 +120,8 @@ function Home({ user }: { user: CurrentUser | null }) {
           <button onClick={() => navigate('/calendar')} className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-sm font-semibold transition-colors">
             <CalendarDays className="w-4 h-4" /> Open the calendar <ArrowRight className="w-4 h-4" />
           </button>
-          <button onClick={() => navigate('/copilot')} className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-[var(--bg-secondary)] border border-[var(--border)] hover:border-[var(--text-secondary)] text-[var(--text-primary)] text-sm font-semibold transition-colors">
-            <MessageSquareText className="w-4 h-4" /> Ask the copilot
+          <button onClick={() => navigate('/genie-agents')} className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-[var(--bg-secondary)] border border-[var(--border)] hover:border-[var(--text-secondary)] text-[var(--text-primary)] text-sm font-semibold transition-colors">
+            <MessageSquareText className="w-4 h-4" /> Ask the Genie Agents
           </button>
         </div>
 

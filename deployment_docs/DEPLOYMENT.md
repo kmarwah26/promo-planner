@@ -1,4 +1,4 @@
-# Promotion Planning Copilot — Deployment
+# Promotion Planning Genie Agents — Deployment
 
 This app is a Databricks App (FastAPI backend + prebuilt React frontend) with a Lakebase
 (Postgres) write-back store and a Genie space over Unity Catalog data.
@@ -42,7 +42,7 @@ The build output `frontend/dist/` is deployed with the app — do not delete it.
 
 ```bash
 databricks apps create promo-planner \
-  --description "Promotion Planning Copilot" -p <profile>
+  --description "Promotion Planning Genie Agents" -p <profile>
 
 # Get the app's service principal client id
 SP=$(databricks apps get promo-planner -p <profile> --output json | \

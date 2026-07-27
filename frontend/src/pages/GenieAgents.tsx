@@ -26,7 +26,7 @@ function extract(data: any): { columns: string[]; rows: any[][] } {
   return { columns: cols, rows };
 }
 
-export default function Copilot() {
+export default function GenieAgents() {
   const [rooms, setRooms] = useState<GenieRoom[]>([]);
   const [roomId, setRoomId] = useState<string>('');
   const [convId, setConvId] = useState<string | null>(null);
@@ -80,7 +80,7 @@ export default function Copilot() {
     <div className="h-full flex flex-col">
       <div className="px-8 pt-6 pb-4 border-b border-[var(--border)] flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-bold text-[var(--text-primary)] flex items-center gap-2"><Sparkles className="w-5 h-5 text-[var(--accent)]" /> RGM Copilot</h2>
+          <h2 className="text-2xl font-bold text-[var(--text-primary)] flex items-center gap-2"><Sparkles className="w-5 h-5 text-[var(--accent)]" /> RGM Genie Agents</h2>
           <p className="text-sm text-[var(--text-secondary)]">Ask about promotions, trade spend and ROI in plain English — powered by Genie over governed data.</p>
         </div>
         {rooms.length > 1 && (
@@ -99,7 +99,7 @@ export default function Copilot() {
             <div className="flex flex-col items-center py-16 text-center text-[var(--text-secondary)]">
               <AlertCircle className="w-10 h-10 mb-3 opacity-40" />
               <p className="font-medium">No Genie space found</p>
-              <p className="text-sm">Create a Genie space over the promotion data to enable the copilot.</p>
+              <p className="text-sm">Create a Genie space over the promotion data to enable the Genie Agents.</p>
             </div>
           ) : msgs.length === 0 ? (
             <div className="py-8">

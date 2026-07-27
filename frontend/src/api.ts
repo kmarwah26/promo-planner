@@ -198,7 +198,7 @@ export const api = {
   getActivity: (promotion_id: string) => request<{ activity: Activity[]; db_available: boolean }>(`/planning/${promotion_id}/activity`),
   recentActivity: () => request<{ activity: Activity[]; db_available: boolean }>('/planning/activity/recent'),
 
-  // Genie copilot
+  // Genie Agents
   listGenieRooms: () => request<{ rooms: GenieRoom[] }>('/genie/rooms'),
   startConversation: (roomId: string, content: string) =>
     request<any>(`/genie/rooms/${roomId}/conversations`, { method: 'POST', body: JSON.stringify({ content }) }),

@@ -5,7 +5,7 @@ import os
 
 from server.routes import catalog, genie, warehouses, user, promos, planning
 
-app = FastAPI(title="Promotion Planning Copilot")
+app = FastAPI(title="Promotion Planning Genie Agents")
 
 app.include_router(catalog.router, prefix="/api")
 app.include_router(genie.router, prefix="/api")

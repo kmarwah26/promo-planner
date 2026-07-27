@@ -1,4 +1,4 @@
-# Promotion Planning Copilot
+# Promotion Planning Genie Agents
 
 A full-stack Databricks App for **Revenue Growth Management (RGM)**: plan, compare and
 approve trade promotions with granular ROI in view — then act on them without leaving the
@@ -18,7 +18,7 @@ app. Built for a beverage portfolio (AB InBev-style brands, markets, channels an
 - **Scenario Comparison** — baseline (no promo) vs proposed plan across the filtered
   portfolio: volume lift, trade spend, incremental margin, net profit and blended ROI,
   with a per-brand net-profit breakdown.
-- **RGM Copilot** — a Genie-powered chat over the governed promotion data. Ask
+- **RGM Genie Agents** — a Genie-powered chat over the governed promotion data. Ask
   *"Where are we overspending with low incrementality?"* or *"Which promos should we move
   from Q2 to Q3?"* and get answers with the generated SQL and result table.
 - **Write-back actions (Lakebase)** — approve plan, adjust trade-spend budget, assign a

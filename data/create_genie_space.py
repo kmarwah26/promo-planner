@@ -73,7 +73,7 @@ def main():
 
     import urllib.request
     body = {
-        "title": "Promotion Planning RGM Copilot",
+        "title": "Promotion Planning RGM Genie Agents",
         "description": "Trade-promotion planning & Revenue Growth Management analytics over the promo_planning dataset.",
         "serialized_space": build_serialized_space(),
         "warehouse_id": args.warehouse,

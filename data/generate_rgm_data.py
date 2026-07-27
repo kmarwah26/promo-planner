@@ -1,5 +1,5 @@
 """Generate synthetic ABI-style Revenue Growth Management (RGM) / promotion-planning
-data in Unity Catalog for the Promotion Planning Copilot demo.
+data in Unity Catalog for the Promotion Planning Genie Agents demo.
 
 Runs entirely in SQL against a serverless SQL warehouse via the Databricks SDK, so it
 needs no local Spark. Produces four Genie-friendly, denormalized tables in

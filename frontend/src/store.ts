@@ -19,7 +19,7 @@ export const useFilters = create<FilterStore>((set) => ({
   clearFilters: () => set({ filters: {} }),
 }));
 
-// The Genie space id, resolved once and shared. Set by the copilot on first load.
+// The Genie space id, resolved once and shared. Set by the Genie Agents on first load.
 interface GenieStore {
   roomId: string | null;
   setRoomId: (id: string | null) => void;
