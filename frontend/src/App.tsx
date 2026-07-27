@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { Routes, Route, useNavigate, useLocation, Link } from 'react-router-dom';
 import {
   SlidersHorizontal, GitCompareArrows, MessageSquareText, LayoutGrid,
-  User, Sparkles, ArrowRight, TrendingUp, Lock, PencilLine,
+  User, Sparkles, ArrowRight, TrendingUp, Lock, PencilLine, Presentation,
 } from 'lucide-react';
 import { api } from './api';
 import type { CurrentUser } from './api';
@@ -11,12 +11,14 @@ import PromoList from './pages/PromoList';
 import ImpactAnalysis from './pages/ImpactAnalysis';
 import GenieAgents from './pages/GenieAgents';
 import PromoDetail from './pages/PromoDetail';
+import Demos from './pages/Demos';
 
 const nav = [
   { to: '/builder', icon: SlidersHorizontal, label: 'Scenario Builder' },
   { to: '/promos', icon: LayoutGrid, label: 'Promotions' },
   { to: '/impact', icon: GitCompareArrows, label: 'Impact Analysis' },
   { to: '/genie-agents', icon: MessageSquareText, label: 'Genie Agents' },
+  { to: '/demos', icon: Presentation, label: 'Demos' },
 ];
 
 export default function App() {
@@ -33,9 +35,9 @@ export default function App() {
 
   return (
     <div className="h-screen overflow-hidden flex flex-col">
-      <header className="shrink-0 h-14 bg-[var(--bg-secondary)] border-b border-[var(--border)] flex items-center px-5 gap-6">
+      <header className="shrink-0 h-14 bg-[var(--bg-secondary)] border-b border-[var(--border)] flex items-center px-5 gap-6" style={{ boxShadow: 'var(--shadow-sm)' }}>
         <Link to="/" className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-indigo-700 flex items-center justify-center">
+          <div className="w-8 h-8 rounded-lg flex items-center justify-center shadow-sm" style={{ background: 'var(--grad-brand)' }}>
             <TrendingUp className="w-4 h-4 text-white" />
           </div>
           <div>
@@ -62,7 +64,7 @@ export default function App() {
         </nav>
 
         <div className="ml-auto flex items-center gap-2.5 px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)]">
-          <div className="w-6 h-6 rounded-full bg-gradient-to-br from-indigo-500 to-indigo-700 flex items-center justify-center">
+          <div className="w-6 h-6 rounded-full flex items-center justify-center" style={{ background: 'var(--grad-brand)' }}>
             {user ? <span className="text-[9px] font-bold text-white">{initials}</span> : <User className="w-3 h-3 text-white" />}
           </div>
           <div className="hidden sm:block">
@@ -80,6 +82,7 @@ export default function App() {
           <Route path="/promos/:id" element={<PromoDetail />} />
           <Route path="/impact" element={<ImpactAnalysis />} />
           <Route path="/genie-agents" element={<GenieAgents />} />
+          <Route path="/demos" element={<Demos />} />
         </Routes>
       </main>
     </div>
@@ -91,10 +94,11 @@ function Home({ user }: { user: CurrentUser | null }) {
   const firstName = user?.display_name?.split(' ')[0];
 
   const cards = [
-    { to: '/builder', icon: SlidersHorizontal, title: 'Scenario Builder', desc: 'Edit discounts in a live grid — forecast lift, trade spend and ROI recompute instantly. Save scenarios to Lakebase.', color: 'from-indigo-500 to-indigo-700' },
-    { to: '/promos', icon: LayoutGrid, title: 'Promotions Workspace', desc: 'Review, approve, adjust budgets, comment and lock promotion plans. Write-back to Lakebase.', color: 'from-blue-500 to-cyan-600' },
-    { to: '/impact', icon: GitCompareArrows, title: 'Impact Analysis', desc: 'See how your saved scenario changes volume, spend and ROI vs the current plan — by brand, market and channel.', color: 'from-fuchsia-500 to-pink-600' },
-    { to: '/genie-agents', icon: MessageSquareText, title: 'RGM Genie Agents', desc: 'Ask in plain English: "Which promos should we move from Q2 to Q3?" Powered by Genie.', color: 'from-violet-500 to-indigo-600' },
+    { to: '/builder', icon: SlidersHorizontal, title: 'Scenario Builder', desc: 'Edit discounts in a live grid — forecast lift, trade spend and ROI recompute instantly. Save scenarios to Lakebase.', color: 'from-indigo-500 to-violet-600' },
+    { to: '/promos', icon: LayoutGrid, title: 'Promotions Workspace', desc: 'Review, approve, adjust budgets, comment and lock promotion plans. Write-back to Lakebase.', color: 'from-sky-500 to-teal-500' },
+    { to: '/impact', icon: GitCompareArrows, title: 'Impact Analysis', desc: 'See how your saved scenario changes volume, spend and ROI vs the current plan — by brand, market and channel.', color: 'from-teal-500 to-emerald-600' },
+    { to: '/genie-agents', icon: MessageSquareText, title: 'RGM Genie Agents', desc: 'Ask in plain English: "Which promos should we move from Q2 to Q3?" Powered by Genie.', color: 'from-violet-500 to-fuchsia-600' },
+    { to: '/demos', icon: Presentation, title: 'Guided Demos', desc: 'Three ready-to-run demo storylines — trim overspend, reallocate budget, and ask the Genie Agents — with step-by-step scripts.', color: 'from-amber-500 to-orange-600' },
   ];
 
   const highlights = [
@@ -109,8 +113,8 @@ function Home({ user }: { user: CurrentUser | null }) {
         <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[var(--accent-dim)] text-[var(--accent)] text-xs font-semibold mb-4">
           <Sparkles className="w-3.5 h-3.5" /> Promote with Purpose
         </span>
-        <h2 className="text-4xl font-bold text-[var(--text-primary)] mb-3 tracking-tight">
-          {firstName ? `Welcome back, ${firstName}` : 'Promotion Planning Genie Agents'}
+        <h2 className="text-4xl font-bold mb-3 tracking-tight">
+          {firstName ? <>Welcome back, <span className="text-gradient">{firstName}</span></> : <span className="text-gradient">Promotion Planning Genie Agents</span>}
         </h2>
         <p className="text-lg text-[var(--text-secondary)] max-w-2xl leading-relaxed">
           Plan, compare and approve trade promotions with granular ROI in view — then act on them
