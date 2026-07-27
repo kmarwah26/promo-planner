@@ -119,24 +119,51 @@ export interface PortfolioKpis {
   n_negative_roi: number;
 }
 
-export interface ScenarioCompare {
-  totals: {
-    baseline_volume: number;
-    proposed_volume: number;
-    incremental_volume: number;
-    trade_spend: number;
-    incremental_margin: number;
-    net_profit: number;
-    roi: number;
-  };
-  by_brand: {
-    brand: string;
-    baseline_volume: number;
-    proposed_volume: number;
-    trade_spend: number;
-    net_profit: number;
-    roi: number;
-  }[];
+export interface EconTotals {
+  baseline_volume: number;
+  proposed_volume: number;
+  incremental_volume: number;
+  trade_spend: number;
+  incremental_margin: number;
+  net_profit: number;
+  roi: number;
+}
+
+export interface ImpactBreakdownRow {
+  name: string;
+  current: EconTotals;
+  scenario: EconTotals;
+  profit_delta: number;
+  roi_delta: number;
+}
+
+export interface ImpactPromo {
+  promotion_id: number;
+  promotion_code: string;
+  brand: string;
+  market: string;
+  channel: string;
+  promo_mechanic: string;
+  scenario_discount: number;
+  has_scenario: boolean;
+  roi: number;
+  trade_spend: number;
+  net_profit: number;
+  roi_delta: number;
+  profit_delta: number;
+}
+
+export interface ImpactAnalysis {
+  n_promos: number;
+  n_scenarios: number;
+  current_totals: EconTotals;
+  scenario_totals: EconTotals;
+  by_market: ImpactBreakdownRow[];
+  by_channel: ImpactBreakdownRow[];
+  by_brand: ImpactBreakdownRow[];
+  winners: ImpactPromo[];
+  losers: ImpactPromo[];
+  movers: ImpactPromo[];
 }
 
 export interface WeeklySales {
@@ -210,7 +237,7 @@ export const api = {
   portfolioKpis: (f: Filters = {}) => request<PortfolioKpis>(`/promos/kpis${qs(f)}`),
   calendar: (f: Filters = {}) => request<{ promos: CalendarPromo[]; weeks: CalendarWeek[] }>(`/promos/calendar${qs(f)}`),
   promoDetail: (id: number) => request<{ promo: Promo & { comments: Comment[] }; weekly: WeeklySales[] }>(`/promos/${id}`),
-  scenarioCompare: (f: Filters = {}) => request<ScenarioCompare>(`/promos/scenario/compare${qs(f)}`),
+  impactAnalysis: (f: Filters = {}) => request<ImpactAnalysis>(`/promos/scenario/compare${qs(f)}`),
 
   // Write-back (Lakebase)
   approve: (promotion_id: string) => request<any>('/planning/approve', { method: 'POST', body: JSON.stringify({ promotion_id }) }),

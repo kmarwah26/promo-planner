@@ -180,6 +180,37 @@ async def promo_detail(promotion_id: int, request: Request):
     return {"promo": promo, "weekly": weekly}
 
 
+def _econ(base_price, baseline_volume, duration_weeks, elasticity, fixed_fee, margin_per_case, discount):
+    """Recompute promotion economics from a discount depth. Mirrors the SQL elasticity
+    model in data/generate_rgm_data.py and the frontend computeEcon() exactly."""
+    lift = 1 + elasticity * discount
+    proposed = baseline_volume * lift * duration_weeks
+    incremental = baseline_volume * (lift - 1) * duration_weeks
+    trade = base_price * discount * proposed + fixed_fee
+    margin = incremental * margin_per_case
+    net = margin - trade
+    return {
+        "baseline_volume": baseline_volume * duration_weeks,
+        "proposed_volume": proposed,
+        "incremental_volume": incremental,
+        "trade_spend": trade,
+        "incremental_margin": margin,
+        "net_profit": net,
+        "roi": (net / trade) if trade else 0.0,
+        "incrementality_pct": lift - 1,
+    }
+
+
+def _agg(econs: list[dict]) -> dict:
+    """Sum a list of per-promo econ dicts into a totals block (with blended ROI)."""
+    keys = ["baseline_volume", "proposed_volume", "incremental_volume", "trade_spend",
+            "incremental_margin", "net_profit"]
+    out = {k: sum(e[k] for e in econs) for k in keys}
+    # ROI must match the per-promo definition: net profit / trade spend.
+    out["roi"] = (out["net_profit"] / out["trade_spend"]) if out["trade_spend"] else 0.0
+    return {k: round(v, 3) for k, v in out.items()}
+
+
 @router.get("/promos/scenario/compare")
 async def scenario_compare(
     request: Request,
@@ -188,30 +219,96 @@ async def scenario_compare(
     brand: str | None = None,
     segment: str | None = None,
 ):
-    """Baseline vs proposed roll-up across the filtered promotion set, plus per-brand breakdown."""
+    """Compare the CURRENT committed plan against the SAVED scenario.
+
+    Current = each promotion's committed discount_depth. Scenario = the discount saved
+    in Lakebase (adjusted_discount), falling back to the committed discount where no
+    scenario has been saved. Economics for both are recomputed with the elasticity model,
+    then aggregated overall and by market / channel / brand, with ROI winners/losers and
+    the best/worst promotion callouts.
+    """
     where = _where(market, channel, brand, segment, None)
-    totals = await run_query(request, f"""
-        SELECT
-          round(sum(baseline_volume_total), 0) AS baseline_volume,
-          round(sum(proposed_volume_total), 0) AS proposed_volume,
-          round(sum(incremental_volume), 0) AS incremental_volume,
-          round(sum(trade_spend), 0) AS trade_spend,
-          round(sum(incremental_margin), 0) AS incremental_margin,
-          round(sum(net_promo_profit), 0) AS net_profit,
-          round(sum(incremental_margin) / nullif(sum(trade_spend), 0), 3) AS roi
+    rows = await run_query(request, f"""
+        SELECT promotion_id, promotion_code, brand, market, channel, promo_mechanic,
+               base_price, baseline_volume, duration_weeks, elasticity, fixed_fee,
+               margin_per_case, discount_depth
         FROM {FQ}.fact_promotions {where}
     """)
-    by_brand = await run_query(request, f"""
-        SELECT brand,
-          round(sum(baseline_volume_total), 0) AS baseline_volume,
-          round(sum(proposed_volume_total), 0) AS proposed_volume,
-          round(sum(trade_spend), 0) AS trade_spend,
-          round(sum(net_promo_profit), 0) AS net_profit,
-          round(sum(incremental_margin) / nullif(sum(trade_spend), 0), 3) AS roi
-        FROM {FQ}.fact_promotions {where}
-        GROUP BY brand ORDER BY net_profit DESC
-    """)
+    numeric = ("base_price", "baseline_volume", "duration_weeks", "elasticity",
+               "fixed_fee", "margin_per_case", "discount_depth", "promotion_id")
+    for r in rows:
+        for k in numeric:
+            r[k] = _num(r.get(k))
+
+    # Overlay saved scenario discounts from Lakebase.
+    from server.routes.planning import get_plan_state_map
+    state_map = await get_plan_state_map()
+
+    per_promo = []
+    for r in rows:
+        st = state_map.get(str(int(r["promotion_id"])))
+        cur_disc = r["discount_depth"]
+        scen_disc = st["adjusted_discount"] if st and st.get("adjusted_discount") is not None else cur_disc
+        args = (r["base_price"], r["baseline_volume"], r["duration_weeks"],
+                r["elasticity"], r["fixed_fee"], r["margin_per_case"])
+        cur = _econ(*args, cur_disc)
+        scen = _econ(*args, scen_disc)
+        per_promo.append({
+            "promotion_id": int(r["promotion_id"]),
+            "promotion_code": r["promotion_code"],
+            "brand": r["brand"], "market": r["market"], "channel": r["channel"],
+            "promo_mechanic": r["promo_mechanic"],
+            "current_discount": round(cur_disc, 4),
+            "scenario_discount": round(scen_disc, 4),
+            "has_scenario": bool(st and st.get("adjusted_discount") is not None and abs(scen_disc - cur_disc) > 1e-9),
+            "current": cur, "scenario": scen,
+            "roi_delta": round(scen["roi"] - cur["roi"], 4),
+            "profit_delta": round(scen["net_profit"] - cur["net_profit"], 2),
+        })
+
+    def breakdown(dim: str):
+        groups: dict[str, dict] = {}
+        for p in per_promo:
+            g = groups.setdefault(p[dim], {"cur": [], "scen": []})
+            g["cur"].append(p["current"]); g["scen"].append(p["scenario"])
+        out = []
+        for name, g in groups.items():
+            cur, scen = _agg(g["cur"]), _agg(g["scen"])
+            out.append({
+                "name": name,
+                "current": cur, "scenario": scen,
+                "profit_delta": round(scen["net_profit"] - cur["net_profit"], 2),
+                "roi_delta": round(scen["roi"] - cur["roi"], 4),
+            })
+        return sorted(out, key=lambda x: x["scenario"]["net_profit"], reverse=True)
+
+    n_scenarios = sum(1 for p in per_promo if p["has_scenario"])
+    winners = sorted([p for p in per_promo], key=lambda p: p["scenario"]["roi"], reverse=True)[:5]
+    losers = sorted([p for p in per_promo], key=lambda p: p["scenario"]["roi"])[:5]
+
+    def slim(p):
+        return {
+            "promotion_id": p["promotion_id"], "promotion_code": p["promotion_code"],
+            "brand": p["brand"], "market": p["market"], "channel": p["channel"],
+            "promo_mechanic": p["promo_mechanic"],
+            "scenario_discount": p["scenario_discount"], "has_scenario": p["has_scenario"],
+            "roi": round(p["scenario"]["roi"], 4),
+            "trade_spend": round(p["scenario"]["trade_spend"], 2),
+            "net_profit": round(p["scenario"]["net_profit"], 2),
+            "roi_delta": p["roi_delta"], "profit_delta": p["profit_delta"],
+        }
+
     return {
-        "totals": {k: _num(v) for k, v in (totals[0] if totals else {}).items()},
-        "by_brand": [{k: _num(v) for k, v in r.items()} for r in by_brand],
+        "n_promos": len(per_promo),
+        "n_scenarios": n_scenarios,
+        "current_totals": _agg([p["current"] for p in per_promo]) if per_promo else {},
+        "scenario_totals": _agg([p["scenario"] for p in per_promo]) if per_promo else {},
+        "by_market": breakdown("market"),
+        "by_channel": breakdown("channel"),
+        "by_brand": breakdown("brand"),
+        "winners": [slim(p) for p in winners],
+        "losers": [slim(p) for p in losers],
+        "movers": [slim(p) for p in sorted(
+            [p for p in per_promo if p["has_scenario"]],
+            key=lambda p: abs(p["profit_delta"]), reverse=True)[:8]],
     }

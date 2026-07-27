@@ -109,8 +109,8 @@ export default function ScenarioGrid() {
       <div className="px-8 pt-6 pb-4 border-b border-[var(--border)] space-y-4">
         <div className="flex items-start justify-between">
           <div>
-            <h2 className="text-2xl font-bold text-[var(--text-primary)]">Scenario Planner</h2>
-            <p className="text-sm text-[var(--text-secondary)]">Edit the discount for any promotion — forecast lift, trade spend, margin and ROI recompute instantly. Save to write the scenario back to Lakebase.</p>
+            <h2 className="text-2xl font-bold text-[var(--text-primary)]">Scenario Builder</h2>
+            <p className="text-sm text-[var(--text-secondary)]">Edit the discount for any promotion — forecast lift, trade spend, margin and ROI recompute instantly. Save to write the scenario back to Lakebase, then see the aggregate effect in Impact Analysis.</p>
           </div>
           <button onClick={saveAll} disabled={savingAll || dirtyCount === 0}
             className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-sm font-semibold transition-colors disabled:opacity-40">
