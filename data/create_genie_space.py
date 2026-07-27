@@ -19,17 +19,20 @@ Key facts:
 - fact_promotions: one row per planned promotion. Grain = promotion_id. Columns include
   brand, pack, category, market, channel, customer_segment, promo_mechanic, start_week/end_week
   (1-52 fiscal weeks), quarter, status (Draft/Proposed/Approved/Locked), base_price, promo_price,
-  discount_depth, baseline_volume_total, proposed_volume_total, incremental_volume, trade_spend,
-  incremental_margin, net_promo_profit, promo_roi, incrementality_pct.
+  discount_depth, elasticity, fixed_fee, baseline_volume_total, proposed_volume_total,
+  incremental_volume, trade_spend, incremental_margin, net_promo_profit, promo_roi, incrementality_pct.
+  There are 27 promotions (3 brands x 3 markets x 3 channels).
 - fact_weekly_sales: weekly baseline vs actual volume per promotion (promotion_id x week_number).
 - dim_product: brand / pack / category reference.
 - dim_calendar: 52-week fiscal calendar mapping week_number -> quarter and month.
 
 Definitions:
+- Volume responds to discount via an elasticity model: lift_multiplier = 1 + elasticity * discount_depth.
+  Display + Feature and Multi-Buy have the highest elasticity; Loyalty Coupon and Price Reduction the lowest.
 - promo_roi = (incremental_margin - trade_spend) / trade_spend. Negative ROI = the promotion
   loses money. "Overspending with low incrementality" = high trade_spend with low
-  incrementality_pct or negative promo_roi.
-- incrementality_pct = (proposed_volume_total - baseline_volume_total) / baseline_volume_total.
+  incrementality_pct or negative promo_roi (typically low-elasticity mechanics at deep discounts).
+- incrementality_pct = lift_multiplier - 1 = (proposed_volume_total - baseline_volume_total) / baseline_volume_total.
 - Trade spend is the promotional investment; net_promo_profit is incremental margin minus trade spend.
 
 When users ask about "moving promos between quarters", use the quarter column and compare

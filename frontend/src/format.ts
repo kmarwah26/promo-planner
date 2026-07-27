@@ -25,6 +25,50 @@ export const roiColor = (roi: number | null | undefined): string => {
   return '#ef4444';                   // red
 };
 
+// Recompute promotion economics from a (possibly edited) discount depth, mirroring the
+// SQL elasticity model in data/generate_rgm_data.py exactly:
+//   lift = 1 + elasticity * discount
+export interface PromoEconInputs {
+  base_price: number;
+  baseline_volume: number;
+  duration_weeks: number;
+  elasticity: number;
+  fixed_fee: number;
+  margin_per_case: number;
+}
+export interface PromoEcon {
+  discount_depth: number;
+  promo_price: number;
+  lift_multiplier: number;
+  incrementality_pct: number;
+  proposed_volume_total: number;
+  incremental_volume: number;
+  trade_spend: number;
+  incremental_margin: number;
+  net_promo_profit: number;
+  promo_roi: number;
+}
+export function computeEcon(p: PromoEconInputs, discount: number): PromoEcon {
+  const lift = 1 + p.elasticity * discount;
+  const proposed = p.baseline_volume * lift * p.duration_weeks;
+  const incremental = p.baseline_volume * (lift - 1) * p.duration_weeks;
+  const trade = p.base_price * discount * proposed + p.fixed_fee;
+  const margin = incremental * p.margin_per_case;
+  const net = margin - trade;
+  return {
+    discount_depth: discount,
+    promo_price: p.base_price * (1 - discount),
+    lift_multiplier: lift,
+    incrementality_pct: lift - 1,
+    proposed_volume_total: Math.round(proposed),
+    incremental_volume: Math.round(incremental),
+    trade_spend: trade,
+    incremental_margin: margin,
+    net_promo_profit: net,
+    promo_roi: trade ? net / trade : 0,
+  };
+}
+
 export const statusColor = (status: string): string => {
   switch (status) {
     case 'Locked': return 'bg-violet-100 text-violet-700 border-violet-200';

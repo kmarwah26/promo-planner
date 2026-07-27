@@ -17,11 +17,13 @@ CREATE TABLE IF NOT EXISTS promo_plan_state (
     promotion_id TEXT PRIMARY KEY,
     status TEXT,                       -- Draft | Proposed | Approved | Locked
     adjusted_budget DOUBLE PRECISION,  -- overridden trade-spend budget
+    adjusted_discount DOUBLE PRECISION,-- scenario discount depth (fraction, e.g. 0.15)
     assigned_to TEXT,                  -- follow-up owner email/name
     locked BOOLEAN NOT NULL DEFAULT FALSE,
     updated_by TEXT,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE promo_plan_state ADD COLUMN IF NOT EXISTS adjusted_discount DOUBLE PRECISION;
 CREATE TABLE IF NOT EXISTS promo_comments (
     id TEXT PRIMARY KEY,
     promotion_id TEXT NOT NULL,
@@ -129,6 +131,7 @@ def _state_dict(r) -> dict:
         "promotion_id": r["promotion_id"],
         "status": r["status"],
         "adjusted_budget": r["adjusted_budget"],
+        "adjusted_discount": r["adjusted_discount"],
         "assigned_to": r["assigned_to"],
         "locked": r["locked"],
         "updated_by": r["updated_by"],
@@ -142,7 +145,7 @@ async def _upsert_state(request: Request, promotion_id: str, **fields):
     if not pool:
         raise HTTPException(status_code=503, detail="Lakebase not available — write-back disabled")
     actor = _actor(request)
-    cols = ["status", "adjusted_budget", "assigned_to", "locked"]
+    cols = ["status", "adjusted_budget", "adjusted_discount", "assigned_to", "locked"]
     async with pool.acquire() as conn:
         existing = await conn.fetchrow("SELECT * FROM promo_plan_state WHERE promotion_id = $1", promotion_id)
         merged = {c: (existing[c] if existing else None) for c in cols}
@@ -152,18 +155,19 @@ async def _upsert_state(request: Request, promotion_id: str, **fields):
             merged[k] = v
         await conn.execute(
             """
-            INSERT INTO promo_plan_state (promotion_id, status, adjusted_budget, assigned_to, locked, updated_by, updated_at)
-            VALUES ($1,$2,$3,$4,$5,$6,$7)
+            INSERT INTO promo_plan_state (promotion_id, status, adjusted_budget, adjusted_discount, assigned_to, locked, updated_by, updated_at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
             ON CONFLICT (promotion_id) DO UPDATE SET
               status = EXCLUDED.status,
               adjusted_budget = EXCLUDED.adjusted_budget,
+              adjusted_discount = EXCLUDED.adjusted_discount,
               assigned_to = EXCLUDED.assigned_to,
               locked = EXCLUDED.locked,
               updated_by = EXCLUDED.updated_by,
               updated_at = EXCLUDED.updated_at
             """,
-            promotion_id, merged["status"], merged["adjusted_budget"], merged["assigned_to"],
-            bool(merged["locked"]), actor, datetime.now(timezone.utc),
+            promotion_id, merged["status"], merged["adjusted_budget"], merged["adjusted_discount"],
+            merged["assigned_to"], bool(merged["locked"]), actor, datetime.now(timezone.utc),
         )
         return await conn.fetchrow("SELECT * FROM promo_plan_state WHERE promotion_id = $1", promotion_id)
 
@@ -180,6 +184,29 @@ async def approve(req: ApproveRequest, request: Request):
     pool = await db.get_pool()
     async with pool.acquire() as conn:
         await _log(conn, req.promotion_id, _actor(request), "approve", "Plan approved")
+    return {"ok": True, "state": _state_dict(r)}
+
+
+class ScenarioRequest(BaseModel):
+    promotion_id: str
+    adjusted_discount: float          # scenario discount depth as a fraction (e.g. 0.15)
+    adjusted_budget: float | None = None  # recomputed trade-spend at that discount
+
+
+@router.post("/planning/scenario")
+async def save_scenario(req: ScenarioRequest, request: Request):
+    """Save a scenario edit from the grid: the proposed discount depth (and the
+    trade-spend budget it implies). Marks the plan Proposed if it was still a Draft."""
+    r = await _upsert_state(
+        request, req.promotion_id,
+        adjusted_discount=req.adjusted_discount,
+        adjusted_budget=req.adjusted_budget,
+    )
+    pool = await db.get_pool()
+    async with pool.acquire() as conn:
+        await _log(conn, req.promotion_id, _actor(request), "scenario",
+                   f"Discount set to {req.adjusted_discount:.0%}"
+                   + (f", budget {req.adjusted_budget:,.0f}" if req.adjusted_budget is not None else ""))
     return {"ok": True, "state": _state_dict(r)}
 
 

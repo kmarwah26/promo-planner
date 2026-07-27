@@ -1,19 +1,19 @@
 import { useState, useEffect } from 'react';
 import { Routes, Route, useNavigate, useLocation, Link } from 'react-router-dom';
 import {
-  CalendarDays, GitCompareArrows, MessageSquareText, LayoutGrid,
+  SlidersHorizontal, GitCompareArrows, MessageSquareText, LayoutGrid,
   User, Sparkles, ArrowRight, TrendingUp, Lock, PencilLine,
 } from 'lucide-react';
 import { api } from './api';
 import type { CurrentUser } from './api';
-import CalendarView from './pages/CalendarView';
+import ScenarioGrid from './pages/ScenarioGrid';
 import PromoList from './pages/PromoList';
 import ScenarioCompare from './pages/ScenarioCompare';
 import GenieAgents from './pages/GenieAgents';
 import PromoDetail from './pages/PromoDetail';
 
 const nav = [
-  { to: '/calendar', icon: CalendarDays, label: 'Planning Calendar' },
+  { to: '/planner', icon: SlidersHorizontal, label: 'Scenario Planner' },
   { to: '/promos', icon: LayoutGrid, label: 'Promotions' },
   { to: '/scenario', icon: GitCompareArrows, label: 'Scenario Compare' },
   { to: '/genie-agents', icon: MessageSquareText, label: 'Genie Agents' },
@@ -75,7 +75,7 @@ export default function App() {
       <main className="flex-1 overflow-hidden">
         <Routes>
           <Route path="/" element={<Home user={user} />} />
-          <Route path="/calendar" element={<CalendarView />} />
+          <Route path="/planner" element={<ScenarioGrid />} />
           <Route path="/promos" element={<PromoList />} />
           <Route path="/promos/:id" element={<PromoDetail />} />
           <Route path="/scenario" element={<ScenarioCompare />} />
@@ -91,7 +91,7 @@ function Home({ user }: { user: CurrentUser | null }) {
   const firstName = user?.display_name?.split(' ')[0];
 
   const cards = [
-    { to: '/calendar', icon: CalendarDays, title: '52-Week Planning Calendar', desc: 'See every promotion across the year by market, channel and brand. Color-coded by ROI.', color: 'from-indigo-500 to-indigo-700' },
+    { to: '/planner', icon: SlidersHorizontal, title: 'Scenario Planner', desc: 'Edit discounts in a live grid — forecast lift, trade spend and ROI recompute instantly. Save scenarios to Lakebase.', color: 'from-indigo-500 to-indigo-700' },
     { to: '/promos', icon: LayoutGrid, title: 'Promotions Workspace', desc: 'Review, approve, adjust budgets, comment and lock promotion plans. Write-back to Lakebase.', color: 'from-blue-500 to-cyan-600' },
     { to: '/scenario', icon: GitCompareArrows, title: 'Scenario Comparison', desc: 'Baseline vs proposed on volume, margin, trade spend and ROI — across the portfolio.', color: 'from-fuchsia-500 to-pink-600' },
     { to: '/genie-agents', icon: MessageSquareText, title: 'RGM Genie Agents', desc: 'Ask in plain English: "Which promos should we move from Q2 to Q3?" Powered by Genie.', color: 'from-violet-500 to-indigo-600' },
@@ -117,8 +117,8 @@ function Home({ user }: { user: CurrentUser | null }) {
           without leaving the app. Built for Revenue Growth Management.
         </p>
         <div className="flex flex-wrap gap-3 mt-6">
-          <button onClick={() => navigate('/calendar')} className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-sm font-semibold transition-colors">
-            <CalendarDays className="w-4 h-4" /> Open the calendar <ArrowRight className="w-4 h-4" />
+          <button onClick={() => navigate('/planner')} className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-sm font-semibold transition-colors">
+            <SlidersHorizontal className="w-4 h-4" /> Open the planner <ArrowRight className="w-4 h-4" />
           </button>
           <button onClick={() => navigate('/genie-agents')} className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-[var(--bg-secondary)] border border-[var(--border)] hover:border-[var(--text-secondary)] text-[var(--text-primary)] text-sm font-semibold transition-colors">
             <MessageSquareText className="w-4 h-4" /> Ask the Genie Agents

@@ -65,6 +65,7 @@ async def list_promos(
         SELECT promotion_id, promotion_code, brand, pack, category, market, channel,
                customer_segment, promo_mechanic, start_week, end_week, duration_weeks,
                quarter, status, base_price, promo_price, discount_depth,
+               baseline_volume, elasticity, fixed_fee, margin_per_case, lift_multiplier,
                baseline_volume_total, proposed_volume_total, incremental_volume,
                trade_spend, incremental_margin, net_promo_profit, promo_roi, incrementality_pct
         FROM {FQ}.fact_promotions
@@ -72,7 +73,8 @@ async def list_promos(
         ORDER BY promotion_id
     """)
     for r in rows:
-        for k in ("base_price", "promo_price", "discount_depth", "baseline_volume_total",
+        for k in ("base_price", "promo_price", "discount_depth", "baseline_volume", "elasticity",
+                  "fixed_fee", "margin_per_case", "lift_multiplier", "baseline_volume_total",
                   "proposed_volume_total", "incremental_volume", "trade_spend",
                   "incremental_margin", "net_promo_profit", "promo_roi", "incrementality_pct",
                   "start_week", "end_week", "duration_weeks", "promotion_id"):
