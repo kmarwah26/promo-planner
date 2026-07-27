@@ -1,0 +1,51 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Refined shades-of-white palette — clean, light, more "data app" feel */
+  --bg-primary: #ffffff;         /* pure white (main content) */
+  --bg-secondary: #fafafa;       /* near-white cards */
+  --bg-tertiary: #f4f4f5;        /* light gray panels */
+  --bg-hover: #ececee;           /* subtle hover */
+  --border: #e4e4e7;             /* light gray borders */
+  --text-primary: #18181b;       /* almost-black text */
+  --text-secondary: #71717a;     /* mid gray secondary */
+  --accent: #6366F1;             /* indigo (marketing primary) */
+  --accent-hover: #4F46E5;
+  --accent-dim: rgba(99, 102, 241, 0.08);
+  --success: #16a34a;
+  --danger: #dc2626;             /* red (kept for error states) */
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-secondary);
+}

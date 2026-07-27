@@ -1,0 +1,20 @@
+Explored company knowledge
+Yes — I’d center the demo on a Promotion Planning Copilot, not a generic dashboard. ABI materials already emphasize sharper pricing and promotions, revenue management, business-facing apps, and “enhancing revenue investment decisions with granular promotions” as priority themes. 
+
+What to include in the demo
+A 52-week promotion planning workspace with a calendar view by market, channel, brand, pack, and customer segment, since ABI’s own materials repeatedly point to planning tools, “Promote with Purpose,” and Revenue Growth Management as the business frame. 
+
+Scenario modeling that compares baseline vs. proposed promo plans on volume, margin, trade spend, and ROI, because Databricks’ RGM accelerators are explicitly framed around pricing performance, promotion ROI, and trade-spend effectiveness. 
+
+A Genie-powered copilot where a revenue manager can ask questions like “Which promos should we move from Q2 to Q3?” or “Where are we overspending with low incrementality?” because Genie is positioned for governed, natural-language analytics and ABI already has custom conversational-app momentum with CheersGPT and Genie-based apps. 
+
+Write-back actions inside the app such as approve plan, adjust budget, add comments, assign follow-ups, and lock a scenario, since ABI is already exploring Lakehouse Apps for write-back applications and Lakebase is designed as the operational database integrated with the lakehouse. 
+
+Drilldowns to zone, wholesaler/retailer, and SKU level so users can explain local promo performance, because ABI’s North Star is hyper-local insight and planners/brand managers need immediate, data-backed answers on promotion performance and localized execution. 
+
+A post-promo learning loop that shows what worked, what failed, and what the app recommends next, since “promotion optimization & predictive effectiveness” is already called out as a target demo/use-case pattern. 
+
+Trusted metrics and business semantics in the app so the answer is explainable, not just flashy, because internal ABI strategy materials explicitly recommend Genie with curated semantic layers, and the RGM accelerator highlights governed KPI definitions and citation-backed answers. 
+
+A simple architecture story: Lakeflow for ingestion, Unity Catalog for governance/semantics, Genie for conversational analysis, Databricks Apps for the front end, and Lakebase for transactional state and write-back. 
+
