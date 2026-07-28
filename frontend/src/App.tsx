@@ -1,29 +1,19 @@
 import { useState, useEffect } from 'react';
-import { Routes, Route, useNavigate, useLocation, Link } from 'react-router-dom';
-import {
-  SlidersHorizontal, GitCompareArrows, MessageSquareText, LayoutGrid,
-  User, Sparkles, ArrowRight, TrendingUp, Lock, PencilLine, Presentation,
-} from 'lucide-react';
+import { CalendarRange, User } from 'lucide-react';
 import { api } from './api';
 import type { CurrentUser } from './api';
-import ScenarioGrid from './pages/ScenarioGrid';
-import PromoList from './pages/PromoList';
-import ImpactAnalysis from './pages/ImpactAnalysis';
-import GenieAgents from './pages/GenieAgents';
-import PromoDetail from './pages/PromoDetail';
-import Demos from './pages/Demos';
+import PricingGrid from './pages/PricingGrid';
+import type { PlanTab } from './store';
 
-const nav = [
-  { to: '/builder', icon: SlidersHorizontal, label: 'Scenario Builder' },
-  { to: '/promos', icon: LayoutGrid, label: 'Promotions' },
-  { to: '/impact', icon: GitCompareArrows, label: 'Impact Analysis' },
-  { to: '/genie-agents', icon: MessageSquareText, label: 'Genie Agents' },
-  { to: '/demos', icon: Presentation, label: 'Demos' },
+const TABS: { id: PlanTab; label: string }[] = [
+  { id: 'ran2026', label: '2026 Promotions Ran' },
+  { id: 'builder2027', label: '2027 Plan Builder' },
+  { id: 'final', label: 'Final Plan' },
 ];
 
 export default function App() {
-  const location = useLocation();
   const [user, setUser] = useState<CurrentUser | null>(null);
+  const [tab, setTab] = useState<PlanTab>('builder2027');
 
   useEffect(() => {
     api.getCurrentUser().then(setUser).catch(() => {});
@@ -36,31 +26,31 @@ export default function App() {
   return (
     <div className="h-screen overflow-hidden flex flex-col">
       <header className="shrink-0 h-14 bg-[var(--bg-secondary)] border-b border-[var(--border)] flex items-center px-5 gap-6" style={{ boxShadow: 'var(--shadow-sm)' }}>
-        <Link to="/" className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2.5">
           <div className="w-8 h-8 rounded-lg flex items-center justify-center shadow-sm" style={{ background: 'var(--grad-brand)' }}>
-            <TrendingUp className="w-4 h-4 text-white" />
+            <CalendarRange className="w-4 h-4 text-white" />
           </div>
           <div>
-            <h1 className="text-sm font-bold tracking-tight text-[var(--text-primary)] leading-none">Promotion Planning Genie Agents</h1>
-            <span className="text-[10px] text-[var(--text-secondary)]">Revenue Growth Management</span>
+            <h1 className="text-sm font-bold tracking-tight text-[var(--text-primary)] leading-none">Promo 1YP</h1>
+            <span className="text-[10px] text-[var(--text-secondary)]">Wholesale Pricing Planner</span>
           </div>
-        </Link>
+        </div>
 
-        <nav className="hidden md:flex items-center gap-1 ml-4">
-          {nav.map((n) => {
-            const active = location.pathname.startsWith(n.to);
-            return (
-              <Link
-                key={n.to}
-                to={n.to}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                  active ? 'bg-[var(--accent-dim)] text-[var(--accent)]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
-                }`}
-              >
-                <n.icon className="w-4 h-4" /> {n.label}
-              </Link>
-            );
-          })}
+        {/* Top tabs: the three plan stages */}
+        <nav className="flex items-center gap-1 ml-2">
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className={`px-3.5 py-1.5 rounded-full text-sm font-medium transition-colors ${
+                tab === t.id
+                  ? 'bg-[var(--accent)] text-white shadow-sm'
+                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
         </nav>
 
         <div className="ml-auto flex items-center gap-2.5 px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)]">
@@ -75,88 +65,8 @@ export default function App() {
       </header>
 
       <main className="flex-1 overflow-hidden">
-        <Routes>
-          <Route path="/" element={<Home user={user} />} />
-          <Route path="/builder" element={<ScenarioGrid />} />
-          <Route path="/promos" element={<PromoList />} />
-          <Route path="/promos/:id" element={<PromoDetail />} />
-          <Route path="/impact" element={<ImpactAnalysis />} />
-          <Route path="/genie-agents" element={<GenieAgents />} />
-          <Route path="/demos" element={<Demos />} />
-        </Routes>
+        <PricingGrid tab={tab} />
       </main>
-    </div>
-  );
-}
-
-function Home({ user }: { user: CurrentUser | null }) {
-  const navigate = useNavigate();
-  const firstName = user?.display_name?.split(' ')[0];
-
-  const cards = [
-    { to: '/builder', icon: SlidersHorizontal, title: 'Scenario Builder', desc: 'Edit discounts in a live grid — forecast lift, trade spend and ROI recompute instantly. Save scenarios to Lakebase.', color: 'from-indigo-500 to-violet-600' },
-    { to: '/promos', icon: LayoutGrid, title: 'Promotions Workspace', desc: 'Review, approve, adjust budgets, comment and lock promotion plans. Write-back to Lakebase.', color: 'from-sky-500 to-teal-500' },
-    { to: '/impact', icon: GitCompareArrows, title: 'Impact Analysis', desc: 'See how your saved scenario changes volume, spend and ROI vs the current plan — by brand, market and channel.', color: 'from-teal-500 to-emerald-600' },
-    { to: '/genie-agents', icon: MessageSquareText, title: 'RGM Genie Agents', desc: 'Ask in plain English: "Which promos should we move from Q2 to Q3?" Powered by Genie.', color: 'from-violet-500 to-fuchsia-600' },
-    { to: '/demos', icon: Presentation, title: 'Guided Demos', desc: 'Three ready-to-run demo storylines — trim overspend, reallocate budget, and ask the Genie Agents — with step-by-step scripts.', color: 'from-amber-500 to-orange-600' },
-  ];
-
-  const highlights = [
-    { icon: TrendingUp, title: 'Decide with ROI in view', desc: 'Every plan shows incremental volume, margin, trade spend and ROI so you invest where it pays back.' },
-    { icon: PencilLine, title: 'Act inside the app', desc: 'Approve plans, adjust budgets, assign follow-ups and comment — persisted transactionally in Lakebase.' },
-    { icon: Lock, title: 'Lock the scenario', desc: 'Freeze an agreed plan so downstream execution works from a single, governed source of truth.' },
-  ];
-
-  return (
-    <div className="h-full overflow-y-auto">
-      <div className="max-w-6xl mx-auto px-8 py-12">
-        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[var(--accent-dim)] text-[var(--accent)] text-xs font-semibold mb-4">
-          <Sparkles className="w-3.5 h-3.5" /> Promote with Purpose
-        </span>
-        <h2 className="text-4xl font-bold mb-3 tracking-tight">
-          {firstName ? <>Welcome back, <span className="text-gradient">{firstName}</span></> : <span className="text-gradient">Promotion Planning Genie Agents</span>}
-        </h2>
-        <p className="text-lg text-[var(--text-secondary)] max-w-2xl leading-relaxed">
-          Plan, compare and approve trade promotions with granular ROI in view — then act on them
-          without leaving the app. Built for Revenue Growth Management.
-        </p>
-        <div className="flex flex-wrap gap-3 mt-6">
-          <button onClick={() => navigate('/builder')} className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-sm font-semibold transition-colors">
-            <SlidersHorizontal className="w-4 h-4" /> Open the builder <ArrowRight className="w-4 h-4" />
-          </button>
-          <button onClick={() => navigate('/genie-agents')} className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-[var(--bg-secondary)] border border-[var(--border)] hover:border-[var(--text-secondary)] text-[var(--text-primary)] text-sm font-semibold transition-colors">
-            <MessageSquareText className="w-4 h-4" /> Ask the Genie Agents
-          </button>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-12 mb-12">
-          {highlights.map((h) => (
-            <div key={h.title} className="p-5 rounded-xl bg-[var(--bg-secondary)] border border-[var(--border)]">
-              <div className="w-10 h-10 rounded-lg bg-[var(--accent-dim)] flex items-center justify-center mb-3">
-                <h.icon className="w-5 h-5 text-[var(--accent)]" />
-              </div>
-              <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-1">{h.title}</h3>
-              <p className="text-xs text-[var(--text-secondary)] leading-relaxed">{h.desc}</p>
-            </div>
-          ))}
-        </div>
-
-        <h3 className="text-xs font-semibold text-[var(--text-secondary)] uppercase tracking-wider mb-4">Explore</h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {cards.map((c) => (
-            <button key={c.to} onClick={() => navigate(c.to)}
-              className="group text-left p-5 rounded-xl bg-[var(--bg-secondary)] border border-[var(--border)] hover:border-[var(--text-secondary)] hover:shadow-lg transition-all duration-200 flex items-start gap-4">
-              <div className={`w-11 h-11 rounded-lg bg-gradient-to-br ${c.color} flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform`}>
-                <c.icon className="w-5 h-5 text-white" />
-              </div>
-              <div>
-                <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-1">{c.title}</h3>
-                <p className="text-xs text-[var(--text-secondary)] leading-relaxed">{c.desc}</p>
-              </div>
-            </button>
-          ))}
-        </div>
-      </div>
     </div>
   );
 }

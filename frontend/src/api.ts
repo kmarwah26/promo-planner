@@ -36,163 +36,72 @@ export interface CurrentUser {
   display_name: string;
 }
 
-export interface PlanState {
-  promotion_id: string;
-  status: string | null;
-  adjusted_budget: number | null;
-  adjusted_discount: number | null;
-  assigned_to: string | null;
-  locked: boolean;
-  updated_by: string | null;
-  updated_at: string | null;
-}
-
-export interface Promo {
-  promotion_id: number;
-  promotion_code: string;
-  brand: string;
-  pack: string;
-  category: string;
-  market: string;
-  channel: string;
-  customer_segment: string;
-  promo_mechanic: string;
-  start_week: number;
-  end_week: number;
-  duration_weeks: number;
-  quarter: string;
-  status: string;
-  base_price: number;
-  promo_price: number;
-  discount_depth: number;
-  // Elasticity model parameters (let the grid recompute economics live):
-  baseline_volume: number;
-  elasticity: number;
-  fixed_fee: number;
-  margin_per_case: number;
-  lift_multiplier: number;
-  baseline_volume_total: number;
-  proposed_volume_total: number;
-  incremental_volume: number;
-  trade_spend: number;
-  incremental_margin: number;
-  net_promo_profit: number;
-  promo_roi: number;
-  incrementality_pct: number;
-  plan_state: PlanState | null;
-}
-
-export interface CalendarWeek {
+export interface IsoWeek {
   week_number: number;
+  iso_label: string;         // "WK01"
   week_start_date: string;
-  quarter: string;
-  month: string;
+  week_end_date: string;
+  date_range_label: string;  // "12/29-01/04"
 }
 
-export interface CalendarPromo {
-  promotion_id: number;
-  promotion_code: string;
-  brand: string;
-  pack: string;
-  market: string;
-  channel: string;
-  customer_segment: string;
-  promo_mechanic: string;
-  status: string;
-  start_week: number;
-  end_week: number;
-  quarter: string;
-  promo_roi: number;
-  trade_spend: number;
-  incremental_volume: number;
-  net_promo_profit: number;
-  plan_state: PlanState | null;
+// A per-week promo cell. Only weeks with a promo (or a sandbox edit) have one.
+export interface PromoCell {
+  week: number;
+  incremental_discount: number | null;
+  absolute_discount: number | null;
+  rec_pptr: number | null;
+  approval_status: string;   // committed | pending | approved | sandbox
+  source: 'production' | 'sandbox';
 }
 
-export interface PortfolioKpis {
-  n_promos: number;
-  total_trade_spend: number;
-  total_incremental_volume: number;
-  total_net_profit: number;
-  blended_roi: number;
-  avg_incrementality: number;
-  n_negative_roi: number;
+// One grid line = (plan_year, wholesaler, brand, prc group).
+export interface GridLine {
+  line_key: string;          // "wholesaler|brand|prc"
+  plan_year: number;
+  wholesaler_id: string;
+  wholesaler_name: string;
+  region: string;
+  state: string;
+  brand_code: string;
+  brand_name: string;
+  prc_code: string;
+  prc_group_name: string;
+  qd_min: number;
+  qd_max: number;
+  deal_description: string;
+  base_pptr: number;
+  curr_max_discount: number;
+  cells: Record<string, PromoCell>;  // keyed by week number (string)
 }
 
-export interface EconTotals {
-  baseline_volume: number;
-  proposed_volume: number;
-  incremental_volume: number;
-  trade_spend: number;
-  incremental_margin: number;
-  net_profit: number;
-  roi: number;
+export interface GridPage {
+  lines: GridLine[];
+  limit: number;
+  offset: number;
+  count: number;
 }
 
-export interface ImpactBreakdownRow {
-  name: string;
-  current: EconTotals;
-  scenario: EconTotals;
-  profit_delta: number;
-  roi_delta: number;
+export interface PricingFilters {
+  wholesalers: { id: string; name: string }[];
+  brands: { code: string; name: string }[];
+  prc_groups: { code: string; name: string }[];
 }
 
-export interface ImpactPromo {
-  promotion_id: number;
-  promotion_code: string;
-  brand: string;
-  market: string;
-  channel: string;
-  promo_mechanic: string;
-  scenario_discount: number;
-  has_scenario: boolean;
-  roi: number;
-  trade_spend: number;
-  net_profit: number;
-  roi_delta: number;
-  profit_delta: number;
+export interface Budget {
+  n_lines: number;
+  n_promo_weeks: number;
+  n_lines_on_promo: number;
+  total_discount: number;
+  avg_incremental_discount: number;
 }
 
-export interface ImpactAnalysis {
-  n_promos: number;
-  n_scenarios: number;
-  current_totals: EconTotals;
-  scenario_totals: EconTotals;
-  by_market: ImpactBreakdownRow[];
-  by_channel: ImpactBreakdownRow[];
-  by_brand: ImpactBreakdownRow[];
-  winners: ImpactPromo[];
-  losers: ImpactPromo[];
-  movers: ImpactPromo[];
-}
-
-export interface WeeklySales {
+export interface CellEdit {
+  wholesaler_id: string;
+  brand_code: string;
+  prc_code: string;
   week_number: number;
-  quarter: string;
-  baseline_volume: number;
-  actual_volume: number;
-  is_promo_week: boolean;
-}
-
-export interface Comment {
-  id: string;
-  author: string;
-  body: string;
-  created_at: string;
-}
-
-export interface Activity {
-  promotion_id?: string;
-  actor: string;
-  action: string;
-  detail: string;
-  created_at: string;
-}
-
-export interface GenieRoom {
-  id: string;
-  title: string;
-  description: string;
+  incremental_discount?: number | null;
+  absolute_discount?: number | null;
 }
 
 export interface LakebaseWrite {
@@ -202,27 +111,39 @@ export interface LakebaseWrite {
   columns: Record<string, any>;
 }
 
-export interface SaveScenarioResult {
+export interface EditResult {
   ok: boolean;
-  state: PlanState;
-  lakebase: {
-    database: string;
-    instance: string;
-    writes: LakebaseWrite[];
-  };
+  written: number;
+  lakebase?: { database: string; instance: string; writes: LakebaseWrite[] };
 }
 
-export type Filters = {
-  market?: string;
-  channel?: string;
+export interface SubmitResult {
+  ok: boolean;
+  submitted: number;
+  detail?: string;
+  writes?: { target: string; table: string; operation: string; detail: string }[];
+}
+
+export interface FinalExport {
+  plan_year: number;
+  status: string;
+  count: number;
+  pricing: Record<string, any>[];
+}
+
+export type GridQuery = {
+  plan_year: number;
+  wholesaler?: string;
   brand?: string;
-  segment?: string;
-  status?: string;
+  prc_group?: string;
+  limit?: number;
+  offset?: number;
+  sandbox_id?: string;
 };
 
-function qs(f: Filters): string {
+function qs(f: Record<string, any>): string {
   const sp = new URLSearchParams();
-  Object.entries(f).forEach(([k, v]) => { if (v) sp.set(k, v); });
+  Object.entries(f).forEach(([k, v]) => { if (v !== undefined && v !== null && v !== '') sp.set(k, String(v)); });
   const s = sp.toString();
   return s ? `?${s}` : '';
 }
@@ -231,29 +152,22 @@ export const api = {
   getCurrentUser: () => request<CurrentUser>('/me'),
   getLogoutUrl: () => request<{ logout_url: string }>('/logout-url'),
 
-  // Promotions (Unity Catalog)
-  getFilters: () => request<Record<string, string[]>>('/promos/filters'),
-  listPromos: (f: Filters = {}) => request<{ promos: Promo[] }>(`/promos${qs(f)}`),
-  portfolioKpis: (f: Filters = {}) => request<PortfolioKpis>(`/promos/kpis${qs(f)}`),
-  calendar: (f: Filters = {}) => request<{ promos: CalendarPromo[]; weeks: CalendarWeek[] }>(`/promos/calendar${qs(f)}`),
-  promoDetail: (id: number) => request<{ promo: Promo & { comments: Comment[] }; weekly: WeeklySales[] }>(`/promos/${id}`),
-  impactAnalysis: (f: Filters = {}) => request<ImpactAnalysis>(`/promos/scenario/compare${qs(f)}`),
+  // Pricing (Unity Catalog reads)
+  getFilters: () => request<PricingFilters>('/pricing/filters'),
+  getWeeks: () => request<{ weeks: IsoWeek[] }>('/pricing/weeks'),
+  getGrid: (q: GridQuery) => request<GridPage>(`/pricing/grid${qs(q)}`),
+  getBudget: (q: Omit<GridQuery, 'limit' | 'offset' | 'sandbox_id'>) =>
+    request<Budget>(`/pricing/budget${qs(q)}`),
+  getFinalExport: (q: { wholesaler?: string; brand?: string; prc_group?: string } = {}) =>
+    request<FinalExport>(`/pricing/final${qs(q)}`),
 
-  // Write-back (Lakebase)
-  approve: (promotion_id: string) => request<any>('/planning/approve', { method: 'POST', body: JSON.stringify({ promotion_id }) }),
-  lock: (promotion_id: string, locked: boolean) => request<any>('/planning/lock', { method: 'POST', body: JSON.stringify({ promotion_id, locked }) }),
-  adjustBudget: (promotion_id: string, adjusted_budget: number) => request<any>('/planning/budget', { method: 'POST', body: JSON.stringify({ promotion_id, adjusted_budget }) }),
-  saveScenario: (promotion_id: string, adjusted_discount: number, adjusted_budget?: number) => request<SaveScenarioResult>('/planning/scenario', { method: 'POST', body: JSON.stringify({ promotion_id, adjusted_discount, adjusted_budget }) }),
-  assign: (promotion_id: string, assigned_to: string) => request<any>('/planning/assign', { method: 'POST', body: JSON.stringify({ promotion_id, assigned_to }) }),
-  addComment: (promotion_id: string, body: string) => request<any>('/planning/comment', { method: 'POST', body: JSON.stringify({ promotion_id, body }) }),
-  getComments: (promotion_id: string) => request<{ comments: Comment[] }>(`/planning/${promotion_id}/comments`),
-  getActivity: (promotion_id: string) => request<{ activity: Activity[]; db_available: boolean }>(`/planning/${promotion_id}/activity`),
-  recentActivity: () => request<{ activity: Activity[]; db_available: boolean }>('/planning/activity/recent'),
-
-  // Genie Agents
-  listGenieRooms: () => request<{ rooms: GenieRoom[] }>('/genie/rooms'),
-  startConversation: (roomId: string, content: string) =>
-    request<any>(`/genie/rooms/${roomId}/conversations`, { method: 'POST', body: JSON.stringify({ content }) }),
-  sendMessage: (roomId: string, conversationId: string, content: string) =>
-    request<any>(`/genie/rooms/${roomId}/conversations/${conversationId}/messages`, { method: 'POST', body: JSON.stringify({ content }) }),
+  // Planning write-back (Lakebase sandbox + UC production)
+  saveEdits: (sandbox_id: string, plan_year: number, edits: CellEdit[]) =>
+    request<EditResult>('/planning/edit', { method: 'POST', body: JSON.stringify({ sandbox_id, plan_year, edits }) }),
+  resetSandbox: (sandbox_id: string, plan_year: number) =>
+    request<{ ok: boolean; deleted: number }>('/planning/reset', { method: 'POST', body: JSON.stringify({ sandbox_id, plan_year }) }),
+  submitSandbox: (sandbox_id: string, plan_year: number) =>
+    request<SubmitResult>('/planning/submit', { method: 'POST', body: JSON.stringify({ sandbox_id, plan_year }) }),
+  approveFinal: (q: { plan_year: number; wholesaler?: string; brand?: string; prc_group?: string }) =>
+    request<{ ok: boolean }>('/planning/approve', { method: 'POST', body: JSON.stringify(q) }),
 };

@@ -10,16 +10,15 @@ command:
 
 # On-behalf-of-user (OBO) authentication: the app receives the logged-in user's OAuth
 # token via the X-Forwarded-Access-Token header and uses it for user-facing Databricks
-# calls (Unity Catalog reads, Genie), so they run with the user's own permissions.
-# Background/shared work (Lakebase write-back) stays on the service principal.
+# calls (Unity Catalog reads/writes), so they run with the user's own permissions.
+# Background/shared work (Lakebase sandbox write-back) stays on the service principal.
 user_authorization:
   scopes:
-    - sql              # SQL Statement API: promotion/calendar/scenario reads
+    - sql              # SQL Statement API: grid reads, submit MERGE, approve UPDATE
     - sql.warehouses   # Warehouse list/start
     - catalog.catalogs # Unity Catalog: list catalogs
     - catalog.schemas  # Unity Catalog: list schemas
     - catalog.tables   # Unity Catalog: list tables + columns
-    - dashboards.genie # Genie space: conversations, query results
 
 resources:
   - name: promo-planner-db
@@ -46,11 +45,18 @@ env:
     value: "promo_planner"
   - name: PGSSLMODE
     value: "require"
-  # Unity Catalog location of the RGM promotion data (read by server/routes/promos.py).
+  # Unity Catalog location of the wholesale pricing data (read by server/routes/pricing.py).
   - name: PROMO_CATALOG
     value: "serverless_razks1_catalog"
   - name: PROMO_SCHEMA
     value: "promo_planning"
-  # SQL warehouse used for all Unity Catalog reads.
+  # SQL warehouse used for all Unity Catalog reads and the submit/approve writes.
   - name: PROMO_WAREHOUSE_ID
     value: "efe860484f99f5a3"
+
+# Scale-to-zero: planning runs in bursts (Commercial Directors edit for a stretch,
+# then the plan is finalized and the app sits idle). Databricks Apps stop compute when
+# idle and cold-start on the next request, so the app "scales down to zero" between
+# planning cycles. Keep no always-on background loops; the Lakebase sandbox holds
+# in-progress edits across restarts. Set the app's compute to the smallest size that
+# meets the low-latency ask, and rely on idle auto-stop rather than a running instance.

@@ -1,8 +1,16 @@
-"""Write-back routes backed by Lakebase (Postgres).
+"""Write-back routes backed by Lakebase (Postgres) + Unity Catalog.
 
-These persist the operational state a revenue manager creates while planning:
-plan status (approve / lock), budget adjustments, follow-up assignments, and comments.
-This is the transactional layer that sits alongside the analytical Unity Catalog data.
+The Promo 1YP data flow is: edit in a low-latency **sandbox** (Lakebase), then
+**submit** to promote those edits into the governed **production** table in Unity
+Catalog, where the CSO team **approves** them for the Final Plan.
+
+- Sandbox edits (per-cell incremental/absolute discounts) live in Lakebase for
+  fast, multi-user, in-progress editing. Multiple users can edit concurrently;
+  each edit records who made it.
+- Submit MERGEs the sandbox rows into UC `fact_promo_week` (plan_year 2027,
+  status 'pending') and clears them from the sandbox.
+- Approve flips submitted 2027 rows to 'approved' (Final Plan).
+- Reset clears all sandbox edits for a filter (the "revert all" button).
 """
 import os
 import uuid
@@ -10,38 +18,34 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from server.db import db
+from server.routes.sql_exec import run_query, FQ
 
 router = APIRouter(tags=["planning"])
 
 CREATE_SQL = """
-CREATE TABLE IF NOT EXISTS promo_plan_state (
-    promotion_id TEXT PRIMARY KEY,
-    status TEXT,                       -- Draft | Proposed | Approved | Locked
-    adjusted_budget DOUBLE PRECISION,  -- overridden trade-spend budget
-    adjusted_discount DOUBLE PRECISION,-- scenario discount depth (fraction, e.g. 0.15)
-    assigned_to TEXT,                  -- follow-up owner email/name
-    locked BOOLEAN NOT NULL DEFAULT FALSE,
+CREATE TABLE IF NOT EXISTS plan_edit (
+    sandbox_id TEXT NOT NULL,
+    plan_year INT NOT NULL,
+    wholesaler_id TEXT NOT NULL,
+    brand_code TEXT NOT NULL,
+    prc_code TEXT NOT NULL,
+    week_number INT NOT NULL,
+    incremental_discount DOUBLE PRECISION,
+    absolute_discount DOUBLE PRECISION,
     updated_by TEXT,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (sandbox_id, plan_year, wholesaler_id, brand_code, prc_code, week_number)
 );
-ALTER TABLE promo_plan_state ADD COLUMN IF NOT EXISTS adjusted_discount DOUBLE PRECISION;
-CREATE TABLE IF NOT EXISTS promo_comments (
+CREATE INDEX IF NOT EXISTS idx_plan_edit_sandbox ON plan_edit (sandbox_id, plan_year);
+CREATE TABLE IF NOT EXISTS plan_activity (
     id TEXT PRIMARY KEY,
-    promotion_id TEXT NOT NULL,
-    author TEXT,
-    body TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-CREATE INDEX IF NOT EXISTS idx_promo_comments_pid ON promo_comments (promotion_id, created_at DESC);
-CREATE TABLE IF NOT EXISTS promo_activity (
-    id TEXT PRIMARY KEY,
-    promotion_id TEXT NOT NULL,
+    sandbox_id TEXT,
     actor TEXT,
     action TEXT NOT NULL,
     detail TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX IF NOT EXISTS idx_promo_activity_pid ON promo_activity (promotion_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_plan_activity_sandbox ON plan_activity (sandbox_id, created_at DESC);
 """
 
 _ready = False
@@ -72,43 +76,17 @@ def _actor(request: Request | None) -> str:
     )
 
 
-async def _log(conn, promotion_id: str, actor: str, action: str, detail: str = ""):
+async def _log(conn, sandbox_id: str, actor: str, action: str, detail: str = ""):
     await conn.execute(
-        "INSERT INTO promo_activity (id, promotion_id, actor, action, detail) VALUES ($1,$2,$3,$4,$5)",
-        uuid.uuid4().hex, promotion_id, actor, action, detail,
+        "INSERT INTO plan_activity (id, sandbox_id, actor, action, detail) VALUES ($1,$2,$3,$4,$5)",
+        uuid.uuid4().hex, sandbox_id, actor, action, detail,
     )
 
 
-# ── Helpers used by promos.py to overlay state onto analytical rows ──
+# ── Helper used by pricing.py to overlay sandbox edits on the grid ──
 
-async def get_plan_state_map() -> dict:
-    """All plan-state rows keyed by promotion_id (empty dict if DB unavailable)."""
-    await _ensure_tables()
-    pool = await db.get_pool()
-    if not pool:
-        return {}
-    try:
-        async with pool.acquire() as conn:
-            rows = await conn.fetch("SELECT * FROM promo_plan_state")
-        return {r["promotion_id"]: _state_dict(r) for r in rows}
-    except Exception:
-        return {}
-
-
-async def get_plan_state(promotion_id: str):
-    await _ensure_tables()
-    pool = await db.get_pool()
-    if not pool:
-        return None
-    try:
-        async with pool.acquire() as conn:
-            r = await conn.fetchrow("SELECT * FROM promo_plan_state WHERE promotion_id = $1", promotion_id)
-        return _state_dict(r) if r else None
-    except Exception:
-        return None
-
-
-async def list_comments(promotion_id: str):
+async def get_sandbox_edits(sandbox_id: str, plan_year: int) -> list[dict]:
+    """All sandbox edits for a sandbox + plan year (empty if DB unavailable)."""
     await _ensure_tables()
     pool = await db.get_pool()
     if not pool:
@@ -116,121 +94,81 @@ async def list_comments(promotion_id: str):
     try:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT id, author, body, created_at FROM promo_comments WHERE promotion_id = $1 ORDER BY created_at DESC",
-                promotion_id,
+                """SELECT wholesaler_id, brand_code, prc_code, week_number,
+                          incremental_discount, absolute_discount
+                   FROM plan_edit WHERE sandbox_id = $1 AND plan_year = $2""",
+                sandbox_id, plan_year,
             )
         return [
-            {"id": r["id"], "author": r["author"], "body": r["body"], "created_at": r["created_at"].isoformat()}
+            {"wholesaler_id": r["wholesaler_id"], "brand_code": r["brand_code"],
+             "prc_code": r["prc_code"], "week_number": r["week_number"],
+             "incremental_discount": r["incremental_discount"],
+             "absolute_discount": r["absolute_discount"]}
             for r in rows
         ]
     except Exception:
         return []
 
 
-def _state_dict(r) -> dict:
-    return {
-        "promotion_id": r["promotion_id"],
-        "status": r["status"],
-        "adjusted_budget": r["adjusted_budget"],
-        "adjusted_discount": r["adjusted_discount"],
-        "assigned_to": r["assigned_to"],
-        "locked": r["locked"],
-        "updated_by": r["updated_by"],
-        "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
-    }
+# ── Write-back endpoints ──
+
+class CellEdit(BaseModel):
+    wholesaler_id: str
+    brand_code: str
+    prc_code: str
+    week_number: int
+    incremental_discount: float | None = None
+    absolute_discount: float | None = None
 
 
-async def _upsert_state(request: Request, promotion_id: str, **fields):
+class EditRequest(BaseModel):
+    sandbox_id: str
+    plan_year: int = 2027
+    edits: list[CellEdit]
+
+
+@router.post("/planning/edit")
+async def save_edits(req: EditRequest, request: Request):
+    """Upsert one or many cell edits into the sandbox.
+
+    Accepts a bulk list so the UI can apply an absolute/incremental discount
+    across many selected rows × weeks in a single call (mass-select workflow).
+    """
     await _ensure_tables()
     pool = await db.get_pool()
     if not pool:
         raise HTTPException(status_code=503, detail="Lakebase not available — write-back disabled")
+    if not req.edits:
+        return {"ok": True, "written": 0}
     actor = _actor(request)
-    cols = ["status", "adjusted_budget", "adjusted_discount", "assigned_to", "locked"]
+    now = datetime.now(timezone.utc)
     async with pool.acquire() as conn:
-        existing = await conn.fetchrow("SELECT * FROM promo_plan_state WHERE promotion_id = $1", promotion_id)
-        merged = {c: (existing[c] if existing else None) for c in cols}
-        if not existing:
-            merged["locked"] = False
-        for k, v in fields.items():
-            merged[k] = v
-        await conn.execute(
-            """
-            INSERT INTO promo_plan_state (promotion_id, status, adjusted_budget, adjusted_discount, assigned_to, locked, updated_by, updated_at)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-            ON CONFLICT (promotion_id) DO UPDATE SET
-              status = EXCLUDED.status,
-              adjusted_budget = EXCLUDED.adjusted_budget,
-              adjusted_discount = EXCLUDED.adjusted_discount,
-              assigned_to = EXCLUDED.assigned_to,
-              locked = EXCLUDED.locked,
-              updated_by = EXCLUDED.updated_by,
-              updated_at = EXCLUDED.updated_at
-            """,
-            promotion_id, merged["status"], merged["adjusted_budget"], merged["adjusted_discount"],
-            merged["assigned_to"], bool(merged["locked"]), actor, datetime.now(timezone.utc),
-        )
-        return await conn.fetchrow("SELECT * FROM promo_plan_state WHERE promotion_id = $1", promotion_id)
-
-
-# ── Write-back endpoints ──
-
-class ApproveRequest(BaseModel):
-    promotion_id: str
-
-
-@router.post("/planning/approve")
-async def approve(req: ApproveRequest, request: Request):
-    r = await _upsert_state(request, req.promotion_id, status="Approved")
-    pool = await db.get_pool()
-    async with pool.acquire() as conn:
-        await _log(conn, req.promotion_id, _actor(request), "approve", "Plan approved")
-    return {"ok": True, "state": _state_dict(r)}
-
-
-class ScenarioRequest(BaseModel):
-    promotion_id: str
-    adjusted_discount: float          # scenario discount depth as a fraction (e.g. 0.15)
-    adjusted_budget: float | None = None  # recomputed trade-spend at that discount
-
-
-@router.post("/planning/scenario")
-async def save_scenario(req: ScenarioRequest, request: Request):
-    """Save a scenario edit from the grid: the proposed discount depth (and the
-    trade-spend budget it implies). Marks the plan Proposed if it was still a Draft."""
-    r = await _upsert_state(
-        request, req.promotion_id,
-        adjusted_discount=req.adjusted_discount,
-        adjusted_budget=req.adjusted_budget,
-    )
-    pool = await db.get_pool()
-    async with pool.acquire() as conn:
-        await _log(conn, req.promotion_id, _actor(request), "scenario",
-                   f"Discount set to {req.adjusted_discount:.0%}"
-                   + (f", budget {req.adjusted_budget:,.0f}" if req.adjusted_budget is not None else ""))
-    # Describe the Lakebase writes this call performed, so the UI can show exactly
-    # what was persisted (and where). These mirror the operations above verbatim.
-    writes = [
-        {
-            "table": "promo_plan_state",
-            "operation": "UPSERT",
-            "row_key": f"promotion_id = {req.promotion_id}",
-            "columns": {
-                "adjusted_discount": round(req.adjusted_discount, 4),
-                **({"adjusted_budget": round(req.adjusted_budget, 2)} if req.adjusted_budget is not None else {}),
-                "updated_by": _actor(request),
-            },
-        },
-        {
-            "table": "promo_activity",
-            "operation": "INSERT",
-            "row_key": f"promotion_id = {req.promotion_id}",
-            "columns": {"action": "scenario"},
-        },
-    ]
+        async with conn.transaction():
+            await conn.executemany(
+                """
+                INSERT INTO plan_edit (sandbox_id, plan_year, wholesaler_id, brand_code,
+                    prc_code, week_number, incremental_discount, absolute_discount, updated_by, updated_at)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+                ON CONFLICT (sandbox_id, plan_year, wholesaler_id, brand_code, prc_code, week_number)
+                DO UPDATE SET incremental_discount = EXCLUDED.incremental_discount,
+                              absolute_discount = EXCLUDED.absolute_discount,
+                              updated_by = EXCLUDED.updated_by,
+                              updated_at = EXCLUDED.updated_at
+                """,
+                [(req.sandbox_id, req.plan_year, e.wholesaler_id, e.brand_code, e.prc_code,
+                  e.week_number, e.incremental_discount, e.absolute_discount, actor, now)
+                 for e in req.edits],
+            )
+            kind = "absolute" if any(e.absolute_discount is not None for e in req.edits) else "incremental"
+            await _log(conn, req.sandbox_id, actor, "edit",
+                       f"{len(req.edits)} cell(s) — {kind} discount")
+    writes = [{
+        "table": "plan_edit", "operation": "UPSERT",
+        "row_key": f"sandbox_id = {req.sandbox_id}",
+        "columns": {"cells": len(req.edits), "plan_year": req.plan_year, "updated_by": actor},
+    }]
     return {
-        "ok": True,
-        "state": _state_dict(r),
+        "ok": True, "written": len(req.edits),
         "lakebase": {
             "database": os.environ.get("PGDATABASE", "promo_planner"),
             "instance": os.environ.get("LAKEBASE_INSTANCE", "lakebase-demo"),
@@ -239,112 +177,152 @@ async def save_scenario(req: ScenarioRequest, request: Request):
     }
 
 
-class LockRequest(BaseModel):
-    promotion_id: str
-    locked: bool = True
+class ResetRequest(BaseModel):
+    sandbox_id: str
+    plan_year: int = 2027
 
 
-@router.post("/planning/lock")
-async def lock(req: LockRequest, request: Request):
-    r = await _upsert_state(request, req.promotion_id, locked=req.locked,
-                            status="Locked" if req.locked else "Approved")
-    pool = await db.get_pool()
-    async with pool.acquire() as conn:
-        await _log(conn, req.promotion_id, _actor(request), "lock" if req.locked else "unlock",
-                   "Scenario locked" if req.locked else "Scenario unlocked")
-    return {"ok": True, "state": _state_dict(r)}
-
-
-class BudgetRequest(BaseModel):
-    promotion_id: str
-    adjusted_budget: float
-
-
-@router.post("/planning/budget")
-async def adjust_budget(req: BudgetRequest, request: Request):
-    r = await _upsert_state(request, req.promotion_id, adjusted_budget=req.adjusted_budget)
-    pool = await db.get_pool()
-    async with pool.acquire() as conn:
-        await _log(conn, req.promotion_id, _actor(request), "adjust_budget",
-                   f"Trade-spend budget set to {req.adjusted_budget:,.0f}")
-    return {"ok": True, "state": _state_dict(r)}
-
-
-class AssignRequest(BaseModel):
-    promotion_id: str
-    assigned_to: str
-
-
-@router.post("/planning/assign")
-async def assign(req: AssignRequest, request: Request):
-    r = await _upsert_state(request, req.promotion_id, assigned_to=req.assigned_to)
-    pool = await db.get_pool()
-    async with pool.acquire() as conn:
-        await _log(conn, req.promotion_id, _actor(request), "assign", f"Follow-up assigned to {req.assigned_to}")
-    return {"ok": True, "state": _state_dict(r)}
-
-
-class CommentRequest(BaseModel):
-    promotion_id: str
-    body: str
-
-
-@router.post("/planning/comment")
-async def add_comment(req: CommentRequest, request: Request):
+@router.post("/planning/reset")
+async def reset_sandbox(req: ResetRequest, request: Request):
+    """Revert all: delete every sandbox edit for this sandbox + plan year."""
     await _ensure_tables()
     pool = await db.get_pool()
     if not pool:
         raise HTTPException(status_code=503, detail="Lakebase not available — write-back disabled")
-    cid = uuid.uuid4().hex
-    author = _actor(request)
     async with pool.acquire() as conn:
-        await conn.execute(
-            "INSERT INTO promo_comments (id, promotion_id, author, body) VALUES ($1,$2,$3,$4)",
-            cid, req.promotion_id, author, req.body,
+        res = await conn.execute(
+            "DELETE FROM plan_edit WHERE sandbox_id = $1 AND plan_year = $2",
+            req.sandbox_id, req.plan_year,
         )
-        await _log(conn, req.promotion_id, author, "comment", req.body[:120])
-    return {"ok": True, "id": cid}
+        await _log(conn, req.sandbox_id, _actor(request), "reset", "Reverted all sandbox edits")
+    # res is like "DELETE <n>"
+    deleted = int(res.split()[-1]) if res and res.split()[-1].isdigit() else 0
+    return {"ok": True, "deleted": deleted}
 
 
-@router.get("/planning/{promotion_id}/comments")
-async def get_comments(promotion_id: str):
-    return {"comments": await list_comments(promotion_id)}
+class SubmitRequest(BaseModel):
+    sandbox_id: str
+    plan_year: int = 2027
 
 
-@router.get("/planning/{promotion_id}/activity")
-async def get_activity(promotion_id: str):
+@router.post("/planning/submit")
+async def submit_sandbox(req: SubmitRequest, request: Request):
+    """Promote sandbox edits → production.
+
+    MERGEs the Lakebase sandbox rows into UC `fact_promo_week` (status 'pending'),
+    recomputing rec_pptr from the line's base price, then clears the submitted
+    sandbox rows. Returns a write summary describing what was persisted where.
+    """
     await _ensure_tables()
     pool = await db.get_pool()
     if not pool:
-        return {"activity": [], "db_available": False}
+        raise HTTPException(status_code=503, detail="Lakebase not available — write-back disabled")
+
+    edits = await get_sandbox_edits(req.sandbox_id, req.plan_year)
+    if not edits:
+        return {"ok": True, "submitted": 0, "detail": "Nothing to submit"}
+
+    # Build a VALUES list to MERGE into UC. rec_pptr is derived from base_pptr in the
+    # target table (absolute overrides incremental).
+    def _v(x):
+        return "NULL" if x is None else str(x)
+    values = ",\n".join(
+        f"('{e['wholesaler_id']}','{e['brand_code']}','{e['prc_code']}',{int(e['week_number'])},"
+        f"{_v(e['incremental_discount'])},{_v(e['absolute_discount'])})"
+        for e in edits
+    )
+    merge_sql = f"""
+        MERGE INTO {FQ}.fact_promo_week t
+        USING (
+          SELECT s.wholesaler_id, s.brand_code, s.prc_code, s.week_number,
+                 s.incremental_discount, s.absolute_discount,
+                 CASE WHEN s.absolute_discount IS NOT NULL
+                      THEN round(p.base_pptr - s.absolute_discount, 2)
+                      ELSE round(p.base_pptr * (1 - coalesce(s.incremental_discount, 0)), 2) END AS rec_pptr
+          FROM (VALUES {values})
+            AS s(wholesaler_id, brand_code, prc_code, week_number, incremental_discount, absolute_discount)
+          JOIN {FQ}.fact_price_plan p
+            ON p.plan_year = {int(req.plan_year)} AND p.wholesaler_id = s.wholesaler_id
+           AND p.brand_code = s.brand_code AND p.prc_code = s.prc_code
+        ) s
+        ON  t.plan_year = {int(req.plan_year)} AND t.wholesaler_id = s.wholesaler_id
+        AND t.brand_code = s.brand_code AND t.prc_code = s.prc_code AND t.week_number = s.week_number
+        WHEN MATCHED THEN UPDATE SET
+          incremental_discount = s.incremental_discount,
+          absolute_discount = s.absolute_discount,
+          rec_pptr = s.rec_pptr,
+          approval_status = 'pending'
+        WHEN NOT MATCHED THEN INSERT
+          (plan_year, wholesaler_id, brand_code, prc_code, week_number,
+           incremental_discount, absolute_discount, rec_pptr, approval_status)
+          VALUES ({int(req.plan_year)}, s.wholesaler_id, s.brand_code, s.prc_code, s.week_number,
+                  s.incremental_discount, s.absolute_discount, s.rec_pptr, 'pending')
+    """
+    await run_query(request, merge_sql)
+
+    # Clear the submitted sandbox rows and log.
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT actor, action, detail, created_at FROM promo_activity WHERE promotion_id = $1 ORDER BY created_at DESC LIMIT 50",
-            promotion_id,
+        await conn.execute(
+            "DELETE FROM plan_edit WHERE sandbox_id = $1 AND plan_year = $2",
+            req.sandbox_id, req.plan_year,
         )
+        await _log(conn, req.sandbox_id, _actor(request), "submit",
+                   f"Submitted {len(edits)} cell(s) to production (pending approval)")
+
     return {
-        "activity": [
-            {"actor": r["actor"], "action": r["action"], "detail": r["detail"], "created_at": r["created_at"].isoformat()}
-            for r in rows
+        "ok": True,
+        "submitted": len(edits),
+        "writes": [
+            {"target": "Unity Catalog", "table": f"{FQ}.fact_promo_week",
+             "operation": "MERGE", "detail": f"{len(edits)} promo-week cell(s) → status 'pending'"},
+            {"target": "Lakebase", "table": "plan_edit",
+             "operation": "DELETE", "detail": "sandbox edits cleared after submit"},
         ],
-        "db_available": True,
     }
+
+
+class ApproveRequest(BaseModel):
+    plan_year: int = 2027
+    wholesaler: str | None = None
+    brand: str | None = None
+    prc_group: str | None = None
+
+
+@router.post("/planning/approve")
+async def approve_final(req: ApproveRequest, request: Request):
+    """CSO approval: flip submitted 2027 rows from 'pending' to 'approved' (Final Plan)."""
+    clauses = [f"plan_year = {int(req.plan_year)}", "approval_status = 'pending'"]
+    if req.wholesaler:
+        clauses.append(f"wholesaler_id = '{req.wholesaler.replace(chr(39), chr(39)*2)}'")
+    if req.brand:
+        clauses.append(f"brand_code = '{req.brand.replace(chr(39), chr(39)*2)}'")
+    if req.prc_group:
+        clauses.append(f"prc_code = '{req.prc_group.replace(chr(39), chr(39)*2)}'")
+    where = " AND ".join(clauses)
+    await run_query(request, f"""
+        UPDATE {FQ}.fact_promo_week SET approval_status = 'approved' WHERE {where}
+    """)
+    pool = await db.get_pool()
+    if pool:
+        async with pool.acquire() as conn:
+            await _log(conn, "final", _actor(request), "approve", f"Approved 2027 plan where {where}")
+    return {"ok": True}
 
 
 @router.get("/planning/activity/recent")
 async def recent_activity():
-    """Recent write-back activity across all promotions (for a dashboard feed)."""
+    """Recent sandbox/submit/approve activity (for a status feed)."""
     await _ensure_tables()
     pool = await db.get_pool()
     if not pool:
         return {"activity": [], "db_available": False}
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT promotion_id, actor, action, detail, created_at FROM promo_activity ORDER BY created_at DESC LIMIT 30"
+            "SELECT sandbox_id, actor, action, detail, created_at FROM plan_activity ORDER BY created_at DESC LIMIT 30"
         )
     return {
         "activity": [
-            {"promotion_id": r["promotion_id"], "actor": r["actor"], "action": r["action"],
+            {"sandbox_id": r["sandbox_id"], "actor": r["actor"], "action": r["action"],
              "detail": r["detail"], "created_at": r["created_at"].isoformat()}
             for r in rows
         ],

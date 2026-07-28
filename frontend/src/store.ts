@@ -1,9 +1,17 @@
 import { create } from 'zustand';
-import type { Filters } from './api';
+
+export type PlanTab = 'ran2026' | 'builder2027' | 'final';
+export type PlanView = 'incremental' | 'absolute' | 'rec_pptr';
+
+export interface PricingFilterState {
+  wholesaler?: string;   // wholesaler_id
+  brand?: string;        // brand_code
+  prc_group?: string;    // prc_code
+}
 
 interface FilterStore {
-  filters: Filters;
-  setFilter: (key: keyof Filters, value: string | undefined) => void;
+  filters: PricingFilterState;
+  setFilter: (key: keyof PricingFilterState, value: string | undefined) => void;
   clearFilters: () => void;
 }
 
@@ -19,12 +27,9 @@ export const useFilters = create<FilterStore>((set) => ({
   clearFilters: () => set({ filters: {} }),
 }));
 
-// The Genie space id, resolved once and shared. Set by the Genie Agents on first load.
-interface GenieStore {
-  roomId: string | null;
-  setRoomId: (id: string | null) => void;
-}
-export const useGenie = create<GenieStore>((set) => ({
-  roomId: null,
-  setRoomId: (id) => set({ roomId: id }),
-}));
+// The plan year each tab reads/writes.
+export const TAB_PLAN_YEAR: Record<PlanTab, number> = {
+  ran2026: 2026,
+  builder2027: 2027,
+  final: 2027,
+};

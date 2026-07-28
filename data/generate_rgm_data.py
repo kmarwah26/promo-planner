@@ -1,22 +1,32 @@
-"""Generate synthetic ABI-style Revenue Growth Management (RGM) / promotion-planning
-data in Unity Catalog for the Promotion Planning Genie Agents demo.
+"""Generate synthetic wholesale promo-pricing data in Unity Catalog for the
+Promo 1YP planning app (AB InBev-style Revenue Management).
 
-Runs entirely in SQL against a serverless SQL warehouse via the Databricks SDK, so it
-needs no local Spark. Produces four Genie-friendly, denormalized tables in
-``fevm_shared_catalog.promo_planning``:
+The app is a calendarized pricing workspace: rows are a **grid line**
+(plan year x wholesaler x brand x PRC group) and columns are the 52 ISO weeks
+of the year. Each cell is the weekly REC PPTR (recommended price to retailer),
+optionally overridden by a promotion that runs for several contiguous weeks.
 
-  * dim_product        — brand / pack / category reference
-  * fact_promotions    — one row per promotion (market, channel, brand, pack, segment,
-                         52-week calendar slot) with baseline vs proposed volume, margin,
-                         trade spend and computed ROI / incrementality.
-  * fact_weekly_sales  — weekly baseline vs promoted volume per promotion (for the
-                         52-week calendar heatmap and post-promo learning).
-  * dim_calendar       — 52-week fiscal calendar (week -> quarter/month) for the year.
+Everything is generated in SQL against a serverless SQL warehouse via the
+Databricks SDK, so no local Spark is needed. Produces six tables in
+``serverless_razks1_catalog.promo_planning``:
+
+  * dim_iso_week      — 52 ISO weeks (week_number -> label + date range).
+  * dim_wholesaler    — distributor/wholesaler reference (id, name, region, state).
+  * dim_brand         — brand code -> brand name.
+  * dim_prc_group     — product/pack "PRC group" (prc_code, pack, QD min/max, deal desc).
+  * fact_price_plan   — DENSE grid lines: one row per (plan_year, wholesaler, brand, prc)
+                        with the base REC PPTR and current max discount. This is the
+                        "row" users review (target ~100-300K+; the customer counts ~1.3M).
+  * fact_promo_week   — SPARSE per-week promo overrides: one row only where a promo
+                        changes the price in a given week. plan_year 2026 = committed
+                        history ("2026 Promotions Ran"); plan_year 2027 approved rows
+                        seed the "Final Plan".
 
 Usage:
-    python data/generate_rgm_data.py --profile fevm-serverless --warehouse <id>
+    python data/generate_rgm_data.py --profile fevm-serverless --warehouse <id> --lines 200000
 """
 import argparse
+import math
 import time
 from databricks.sdk import WorkspaceClient
 
@@ -24,30 +34,44 @@ CATALOG = "serverless_razks1_catalog"
 SCHEMA = "promo_planning"
 FQ = f"{CATALOG}.{SCHEMA}"
 
-# Trimmed to a full-factorial 3 x 3 x 3 = 27 promotions for a succinct demo.
-MARKETS = ["USA-Northeast", "USA-Midwest", "USA-West"]
-CHANNELS = ["Off-Premise Grocery", "Club/Warehouse", "On-Premise Bar"]
-SEGMENTS = ["National Chains", "Regional Grocers", "On-Premise Accounts"]
-# promo_mechanic -> volume elasticity to discount depth (lift = 1 + elasticity * discount).
-# Display/Multi-Buy drive the most incremental volume per point of discount; low-elasticity
-# mechanics (Loyalty, Price Reduction) turn unprofitable as discount deepens, which is the
-# whole point of the demo — find the promos that overspend for too little lift.
-MECHANIC_ELASTICITY = {
-    "Display + Feature": 9,
-    "Multi-Buy (2-for)": 8,
-    "Bonus Pack": 6,
-    "Price Reduction": 4,
-    "Loyalty Coupon": 3,
-}
-MECHANICS = list(MECHANIC_ELASTICITY.keys())
-# brand -> (category, pack). One representative pack per brand keeps the grid readable.
-BRANDS = {
-    "Corona Extra": ("Premium Import", "12pk Can"),
-    "Michelob Ultra": ("Premium Light", "12pk Can"),
-    "Bud Light": ("Core Light", "18pk Can"),
-}
+# ── Brand catalog (code -> name). Codes/names mirror the customer screenshots. ──
+BRANDS = [
+    ("STA", "STELLA ARTOIS"),
+    ("MUL", "MICHELOB ULTRA"),
+    ("P6F", "FRANZISKANER HEFE WEISS"),
+    ("BU4", "BUD LIGHT SELTZER MANGO"),
+    ("RWL", "CUTWATER RANCH WATER LIME"),
+    ("RMJ", "CUTWATER MINT AND LIME MOJITO"),
+    ("BHI", "BUSCH LIGHT LIME"),
+    ("GMB", "GOLDEN ROAD BLOOMIN BLONDE ALE"),
+    ("SA2", "STARBOVICH"),
+    ("BLR", "BITSA LIMB-A-RITA"),
+    ("MF2", "NUTRL FRUIT VARIETY PACK"),
+    ("BDL", "BUD LIGHT"),
+    ("BUD", "BUDWEISER"),
+    ("HGA", "HOOP TEA HALF AND HALF A"),
+    ("COR", "CORONA EXTRA"),
+]
 
-MARGIN_RATE = 0.38  # gross margin as a fraction of base price
+# ── Pack / PRC-group configurations and the deal descriptions from the screenshots. ──
+PACKS = [
+    "24/12 CAN 4/6", "1/6 BBL DFT", "24/12 NRLN 4/6", "24/12 NRLN 2/12",
+    "15/25 CAN", "24/12 CAN 4/4 (LQ)", "24/12 CAN", "24/12 CAN 2/12",
+    "1/2 BBL", "24/16 CAN", "12/24 CAN", "24/16 ALU",
+]
+DEAL_DESCRIPTIONS = ["General Market", "Retail - Military", "Licensed Home 3", "CLARION"]
+
+# ── Wholesaler name generation fragments. ──
+CITIES = [
+    "ARKANSAS", "EAGLE ROCK", "ATLANTA", "UNITED", "ORANGE COUNTY", "KABRICK",
+    "SENECA", "ASHLAND", "STARBOVICH", "REPUBLIC", "MASON CITY", "COLORADO",
+    "JACKSONVILLE", "STANHOPE", "HEBGARDEN", "TRISTAR", "SUNRISE", "SAVANNAH",
+    "PIEDMONT", "GREAT LAKES", "CASCADE", "LONE STAR", "GULF COAST", "BAY AREA",
+]
+WS_SUFFIX = ["BEVERAGE SALES INC", "DIST CO", "DISTRIBUTORS INC", "WHOLESALE CO",
+             "BEVERAGE CO", "PDI OF", "DIST CO", "BEVERAGE LLC"]
+REGIONS = ["Northeast", "Southeast", "Midwest", "Southwest", "West"]
+STATES = ["AR", "CO", "GA", "TX", "CA", "IL", "OH", "FL", "NY", "WA", "AZ", "MA"]
 
 
 def exec_sql(w: WorkspaceClient, warehouse_id: str, sql: str, label: str = ""):
@@ -55,7 +79,6 @@ def exec_sql(w: WorkspaceClient, warehouse_id: str, sql: str, label: str = ""):
         warehouse_id=warehouse_id, statement=sql, wait_timeout="50s"
     )
     state = resp.status.state.value if resp.status and resp.status.state else "UNKNOWN"
-    # poll if still running
     stmt_id = resp.statement_id
     while state in ("PENDING", "RUNNING") and stmt_id:
         time.sleep(2)
@@ -68,164 +91,179 @@ def exec_sql(w: WorkspaceClient, warehouse_id: str, sql: str, label: str = ""):
     return resp
 
 
+def _sql_str_array(values):
+    return "array(" + ",".join(f"'{v}'" for v in values) + ")"
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--profile", default="fevm-serverless")
     ap.add_argument("--warehouse", required=True)
+    ap.add_argument("--lines", type=int, default=200_000,
+                    help="Approx. number of grid lines PER plan year (default 200000).")
+    ap.add_argument("--prc-per-brand", type=int, default=4,
+                    help="PRC groups generated per brand (default 4).")
     args = ap.parse_args()
 
     w = WorkspaceClient(profile=args.profile)
     wid = args.warehouse
 
-    print(f"Creating schema {FQ} ...")
-    exec_sql(w, wid, f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA} COMMENT 'ABI Revenue Growth Management promotion-planning demo data'", "create schema")
+    n_products = len(BRANDS) * args.prc_per_brand           # distinct (brand, prc) product lines
+    n_wholesalers = max(1, math.ceil(args.lines / n_products))
+    print(f"Target ~{args.lines:,} lines/year → {n_wholesalers:,} wholesalers × "
+          f"{n_products} products ({len(BRANDS)} brands × {args.prc_per_brand} PRC groups).")
 
-    # ── dim_calendar: 52-week fiscal calendar for FY2026 ──
-    exec_sql(w, wid, f"DROP TABLE IF EXISTS {FQ}.dim_calendar", "drop dim_calendar")
+    print(f"Creating schema {FQ} ...")
+    exec_sql(w, wid, f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA} "
+             "COMMENT 'AB InBev-style wholesale promo-pricing (Promo 1YP) demo data'", "create schema")
+
+    # ── dim_iso_week: 52 ISO weeks anchored at 2026-12-29 (matches the customer screenshot). ──
+    exec_sql(w, wid, f"DROP TABLE IF EXISTS {FQ}.dim_iso_week", "drop dim_iso_week")
     exec_sql(w, wid, f"""
-        CREATE TABLE {FQ}.dim_calendar
-        COMMENT 'Fiscal 52-week calendar. One row per ISO week of the planning year, mapped to quarter and month.'
+        CREATE TABLE {FQ}.dim_iso_week
+        COMMENT 'Planning calendar: one row per ISO week (1-52) with label and date range.'
         AS
         SELECT
           wk AS week_number,
-          date_add('2026-01-05', (wk-1)*7) AS week_start_date,
-          concat('Q', cast(least(4, ceil(wk/13.0)) as int)) AS quarter,
-          date_format(date_add('2026-01-05', (wk-1)*7), 'MMMM') AS month
+          concat('WK', lpad(cast(wk AS string), 2, '0')) AS iso_label,
+          date_add('2026-12-29', (wk-1)*7) AS week_start_date,
+          date_add('2026-12-29', (wk-1)*7 + 6) AS week_end_date,
+          concat(date_format(date_add('2026-12-29', (wk-1)*7), 'MM/dd'), '-',
+                 date_format(date_add('2026-12-29', (wk-1)*7 + 6), 'MM/dd')) AS date_range_label
         FROM (SELECT explode(sequence(1, 52)) AS wk)
-    """, "dim_calendar")
+    """, "dim_iso_week")
 
-    # ── dim_product ──
-    prod_rows = []
-    pid = 0
-    for brand, (cat, pack) in BRANDS.items():
-        pid += 1
-        prod_rows.append(f"({pid}, '{brand}', '{pack}', '{cat}')")
-    exec_sql(w, wid, f"DROP TABLE IF EXISTS {FQ}.dim_product", "drop dim_product")
+    # ── dim_brand ──
+    exec_sql(w, wid, f"DROP TABLE IF EXISTS {FQ}.dim_brand", "drop dim_brand")
     exec_sql(w, wid, f"""
-        CREATE TABLE {FQ}.dim_product (
-          product_id INT COMMENT 'Surrogate key for a brand + pack combination',
-          brand STRING COMMENT 'Beer brand name',
-          pack STRING COMMENT 'Pack configuration (e.g. 12pk Can)',
-          category STRING COMMENT 'Brand price/category tier'
-        )
-        COMMENT 'Product dimension: brand, pack size and category tier for the ABI portfolio.'
-    """, "dim_product ddl")
-    exec_sql(w, wid, f"INSERT INTO {FQ}.dim_product VALUES {', '.join(prod_rows)}", "dim_product insert")
+        CREATE TABLE {FQ}.dim_brand (
+          brand_code STRING COMMENT 'Short brand code (e.g. STA)',
+          brand_name STRING COMMENT 'Full brand name'
+        ) COMMENT 'Brand dimension.'
+    """, "dim_brand ddl")
+    brand_vals = ", ".join(f"('{c}', '{n}')" for c, n in BRANDS)
+    exec_sql(w, wid, f"INSERT INTO {FQ}.dim_brand VALUES {brand_vals}", "dim_brand insert")
 
-    # ── fact_promotions ── full-factorial brand x market x channel (27 rows) ──
-    #
-    # Economics follow an explicit elasticity model so the app's scenario grid can
-    # recompute every metric live from a changed discount and match these stored values:
-    #   lift_multiplier      = 1 + elasticity * discount_depth
-    #   proposed_volume      = baseline_volume * lift_multiplier * duration_weeks
-    #   incremental_volume   = baseline_volume * (lift_multiplier - 1) * duration_weeks
-    #   trade_spend          = base_price * discount_depth * proposed_volume + fixed_fee
-    #   incremental_margin   = incremental_volume * margin_per_case
-    #   net_promo_profit     = incremental_margin - trade_spend
-    #   promo_roi            = net_promo_profit / trade_spend
-    exec_sql(w, wid, f"DROP TABLE IF EXISTS {FQ}.fact_promotions", "drop fact_promotions")
-    market_list = ",".join(f"'{m}'" for m in MARKETS)
-    channel_list = ",".join(f"'{c}'" for c in CHANNELS)
-    segment_arr = "array(" + ",".join(f"'{s}'" for s in SEGMENTS) + ")"
-    status_arr = "array('Draft','Proposed','Approved')"
-    # SQL CASE mapping mechanic -> elasticity
-    elast_case = " ".join(
-        f"WHEN promo_mechanic = '{m}' THEN {e}" for m, e in MECHANIC_ELASTICITY.items()
-    )
-    mechanic_arr = "array(" + ",".join(f"'{m}'" for m in MECHANICS) + ")"
-
+    # ── dim_prc_group: prc-per-brand product/pack lines per brand. ──
+    exec_sql(w, wid, f"DROP TABLE IF EXISTS {FQ}.dim_prc_group", "drop dim_prc_group")
     exec_sql(w, wid, f"""
-        CREATE TABLE {FQ}.fact_promotions
-        COMMENT 'One row per planned promotion (brand x market x channel). Economics follow an elasticity model: lift = 1 + elasticity*discount. Grain: promotion_id.'
+        CREATE TABLE {FQ}.dim_prc_group
+        COMMENT 'Product "PRC group": a brand + pack configuration with QD thresholds and deal type.'
         AS
-        WITH base AS (
-          SELECT
-            p.product_id, p.brand, p.pack, p.category,
-            m.market, c.channel,
-            abs(hash(concat(p.brand, m.market, c.channel))) AS h
-          FROM {FQ}.dim_product p
-          CROSS JOIN (SELECT explode(array({market_list})) AS market) m
-          CROSS JOIN (SELECT explode(array({channel_list})) AS channel) c
-        ),
-        assigned AS (
-          SELECT
-            row_number() OVER (ORDER BY brand, market, channel) AS promotion_id,
-            brand, pack, category, market, channel, h,
-            {segment_arr}[pmod(h, 3)] AS customer_segment,
-            {mechanic_arr}[pmod(h, 5)] AS promo_mechanic,
-            (pmod(h, 40) + 4) AS start_week,
-            (pmod(h, 40) + 4 + 2) AS end_week,
-            3 AS duration_weeks,
-            concat('Q', cast(least(4, ceil((pmod(h,40)+4)/13.0)) AS int)) AS quarter,
-            {status_arr}[pmod(h, 3)] AS status,
-            round(5.0 + pmod(h, 45) * 0.10, 2) AS base_price,
-            round((0.08 + pmod(h, 15) * 0.01), 3) AS discount_depth,   -- 8%-22% off
-            (2000 + pmod(h, 6000)) AS baseline_volume
-          FROM base
-        ),
-        model AS (
-          SELECT *,
-            concat('PROMO-', lpad(cast(promotion_id AS string), 4, '0')) AS promotion_code,
-            (CASE {elast_case} ELSE 8 END) AS elasticity,
-            (CASE WHEN promo_mechanic IN ('Display + Feature','Bonus Pack') THEN 5000 ELSE 1500 END) AS fixed_fee,
-            round(base_price * {MARGIN_RATE}, 4) AS margin_per_case
-          FROM assigned
-        ),
-        derived AS (
-          SELECT *,
-            round(1 + elasticity * discount_depth, 4) AS lift_multiplier
-          FROM model
+        WITH b AS (SELECT brand_code, brand_name FROM {FQ}.dim_brand),
+        expanded AS (
+          SELECT b.brand_code, b.brand_name, seq AS prc_seq,
+                 abs(hash(concat(b.brand_code, cast(seq AS string)))) AS h
+          FROM b LATERAL VIEW explode(sequence(1, {args.prc_per_brand})) t AS seq
         )
         SELECT
-          promotion_id, promotion_code, brand, pack, category, market, channel,
-          customer_segment, promo_mechanic, start_week, end_week, duration_weeks, quarter, status,
-          base_price, discount_depth, baseline_volume, elasticity, fixed_fee, margin_per_case,
-          lift_multiplier,
-          round(base_price * (1 - discount_depth), 2) AS promo_price,
-          cast(round(baseline_volume * duration_weeks) AS bigint) AS baseline_volume_total,
-          cast(round(baseline_volume * lift_multiplier * duration_weeks) AS bigint) AS proposed_volume_total,
-          cast(round(baseline_volume * (lift_multiplier - 1) * duration_weeks) AS bigint) AS incremental_volume,
-          round(base_price * discount_depth * (baseline_volume * lift_multiplier * duration_weeks) + fixed_fee, 2) AS trade_spend,
-          round(baseline_volume * (lift_multiplier - 1) * duration_weeks * margin_per_case, 2) AS incremental_margin,
-          round(baseline_volume * (lift_multiplier - 1) * duration_weeks * margin_per_case
-                - (base_price * discount_depth * (baseline_volume * lift_multiplier * duration_weeks) + fixed_fee), 2) AS net_promo_profit,
-          round((baseline_volume * (lift_multiplier - 1) * duration_weeks * margin_per_case
-                 - (base_price * discount_depth * (baseline_volume * lift_multiplier * duration_weeks) + fixed_fee))
-                / nullif(base_price * discount_depth * (baseline_volume * lift_multiplier * duration_weeks) + fixed_fee, 0), 3) AS promo_roi,
-          round(lift_multiplier - 1, 3) AS incrementality_pct
-        FROM derived
-    """, "fact_promotions (elasticity model)")
+          concat(brand_code, lpad(cast(prc_seq AS string), 2, '0')) AS prc_code,
+          brand_code, brand_name,
+          {_sql_str_array(PACKS)}[pmod(h, {len(PACKS)})] AS prc_group_name,
+          (pmod(h, 20) + 1) AS qd_min,
+          CASE WHEN pmod(h, 3) = 0 THEN 9999 ELSE pmod(h, 90) + 10 END AS qd_max,
+          {_sql_str_array(DEAL_DESCRIPTIONS)}[pmod(h, {len(DEAL_DESCRIPTIONS)})] AS deal_description
+        FROM expanded
+    """, "dim_prc_group")
 
-    # ── fact_weekly_sales: expand each promo across its active weeks + surrounding baseline ──
-    exec_sql(w, wid, f"DROP TABLE IF EXISTS {FQ}.fact_weekly_sales", "drop fact_weekly_sales")
+    # ── dim_wholesaler: n_wholesalers distributors with id/name/region/state. ──
+    exec_sql(w, wid, f"DROP TABLE IF EXISTS {FQ}.dim_wholesaler", "drop dim_wholesaler")
     exec_sql(w, wid, f"""
-        CREATE TABLE {FQ}.fact_weekly_sales
-        COMMENT 'Weekly volume per promotion across the 52-week calendar: baseline vs actual/promoted volume. Grain: promotion_id x week_number.'
+        CREATE TABLE {FQ}.dim_wholesaler
+        COMMENT 'Wholesaler/distributor dimension (id, name, region, state).'
         AS
+        WITH ids AS (SELECT explode(sequence(1, {n_wholesalers})) AS n)
         SELECT
-          f.promotion_id, f.promotion_code, f.brand, f.pack, f.market, f.channel,
-          f.customer_segment, f.promo_mechanic, f.status,
-          cal.week_number,
-          cal.quarter,
-          f.baseline_volume AS baseline_volume,
+          lpad(cast(n AS string), 5, '0') AS wholesaler_id,
+          concat(
+            {_sql_str_array(CITIES)}[pmod(abs(hash(n)), {len(CITIES)})], ' ',
+            {_sql_str_array(WS_SUFFIX)}[pmod(abs(hash(n * 7)), {len(WS_SUFFIX)})]
+          ) AS wholesaler_name,
+          {_sql_str_array(REGIONS)}[pmod(abs(hash(n * 13)), {len(REGIONS)})] AS region,
+          {_sql_str_array(STATES)}[pmod(abs(hash(n * 17)), {len(STATES)})] AS state
+        FROM ids
+    """, "dim_wholesaler")
+
+    # ── fact_price_plan: DENSE grid lines for both plan years. ──
+    # base_pptr ~ $18-$130 (matches screenshot price range); curr_max_discount is a $ cap.
+    exec_sql(w, wid, f"DROP TABLE IF EXISTS {FQ}.fact_price_plan", "drop fact_price_plan")
+    exec_sql(w, wid, f"""
+        CREATE TABLE {FQ}.fact_price_plan
+        COMMENT 'Dense grid lines: one row per (plan_year, wholesaler, brand, prc group) with base REC PPTR. Grain the customer counts (~1.3M in prod).'
+        AS
+        WITH lines AS (
+          SELECT
+            yr.plan_year,
+            ws.wholesaler_id, ws.wholesaler_name, ws.region, ws.state,
+            pg.brand_code, pg.brand_name, pg.prc_code, pg.prc_group_name,
+            pg.qd_min, pg.qd_max, pg.deal_description,
+            abs(hash(concat(ws.wholesaler_id, pg.prc_code, cast(yr.plan_year AS string)))) AS h
+          FROM (SELECT explode(array(2026, 2027)) AS plan_year) yr
+          CROSS JOIN {FQ}.dim_wholesaler ws
+          CROSS JOIN {FQ}.dim_prc_group pg
+        )
+        SELECT
+          plan_year, wholesaler_id, wholesaler_name, region, state,
+          brand_code, brand_name, prc_code, prc_group_name, qd_min, qd_max, deal_description,
+          round(18.0 + pmod(h, 112) + (pmod(h, 100) / 100.0), 2) AS base_pptr,
+          round(1.0 + pmod(h, 40) * 0.10, 2) AS curr_max_discount
+        FROM lines
+    """, "fact_price_plan")
+
+    # ── fact_promo_week: SPARSE per-week promo overrides. ──
+    # Each line gets up to two contiguous promo windows (derived from its hash). A week is
+    # in-promo when it falls inside a window; only those weeks are materialized.
+    #   window 1: start s1 = pmod(h,40)+3, length l1 = pmod(h,4)+2
+    #   window 2: start s2 = pmod(h,20)+30, length l2 = pmod(h,3)+2 (only when pmod(h,2)=0)
+    # 2026 rows = 'committed'; 2027 rows = 'approved' (Final Plan seed) except ~1/4 'pending'.
+    exec_sql(w, wid, f"DROP TABLE IF EXISTS {FQ}.fact_promo_week", "drop fact_promo_week")
+    exec_sql(w, wid, f"""
+        CREATE TABLE {FQ}.fact_promo_week
+        COMMENT 'Sparse per-week promo overrides. One row only where a promo changes the weekly price. Grain: plan_year x line x week_number.'
+        AS
+        WITH lines AS (
+          SELECT plan_year, wholesaler_id, brand_code, prc_code, base_pptr,
+                 abs(hash(concat(wholesaler_id, prc_code, cast(plan_year AS string)))) AS h
+          FROM {FQ}.fact_price_plan
+          WHERE pmod(abs(hash(concat(wholesaler_id, prc_code))), 5) < 4   -- ~80% of lines run a promo
+        ),
+        params AS (
+          SELECT *,
+            pmod(h, 40) + 3 AS s1, pmod(h, 4) + 2 AS l1,
+            pmod(h, 20) + 30 AS s2, pmod(h, 3) + 2 AS l2,
+            (pmod(h, 2) = 0) AS has_second,
+            round(0.05 + pmod(h, 20) * 0.01, 3) AS disc1,   -- 5%-24%
+            round(0.05 + pmod(h, 15) * 0.01, 3) AS disc2
+          FROM lines
+        ),
+        exploded AS (
+          SELECT p.*, cal.week_number
+          FROM params p
+          JOIN {FQ}.dim_iso_week cal
+            ON (cal.week_number BETWEEN p.s1 AND p.s1 + p.l1 - 1)
+            OR (p.has_second AND cal.week_number BETWEEN p.s2 AND p.s2 + p.l2 - 1)
+        )
+        SELECT
+          plan_year, wholesaler_id, brand_code, prc_code, week_number,
+          CASE WHEN week_number >= s2 THEN disc2 ELSE disc1 END AS incremental_discount,
+          CAST(NULL AS DOUBLE) AS absolute_discount,
+          round(base_pptr * (1 - CASE WHEN week_number >= s2 THEN disc2 ELSE disc1 END), 2) AS rec_pptr,
           CASE
-            WHEN cal.week_number BETWEEN f.start_week AND f.end_week
-              THEN cast(round(f.baseline_volume * f.lift_multiplier) AS bigint)
-            ELSE f.baseline_volume
-          END AS actual_volume,
-          CASE WHEN cal.week_number BETWEEN f.start_week AND f.end_week THEN true ELSE false END AS is_promo_week
-        FROM {FQ}.fact_promotions f
-        JOIN {FQ}.dim_calendar cal
-          ON cal.week_number BETWEEN greatest(1, f.start_week - 2) AND least(52, f.end_week + 2)
-    """, "fact_weekly_sales")
+            WHEN plan_year = 2026 THEN 'committed'
+            WHEN pmod(h, 4) = 0 THEN 'pending'
+            ELSE 'approved'
+          END AS approval_status
+        FROM exploded
+    """, "fact_promo_week")
 
     # counts
-    for t in ["dim_calendar", "dim_product", "fact_promotions", "fact_weekly_sales"]:
+    for t in ["dim_iso_week", "dim_brand", "dim_prc_group", "dim_wholesaler",
+              "fact_price_plan", "fact_promo_week"]:
         r = exec_sql(w, wid, f"SELECT count(*) AS n FROM {FQ}.{t}", f"count {t}")
         n = r.result.data_array[0][0] if r.result and r.result.data_array else "?"
         print(f"    {t}: {n} rows")
 
-    print("\n✅ RGM demo data ready in", FQ)
+    print("\n✅ Promo 1YP demo data ready in", FQ)
 
 
 if __name__ == "__main__":
