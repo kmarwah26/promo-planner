@@ -93,7 +93,7 @@ async def grid(
     the page are left-joined from fact_promo_week; sandbox edits (2027 Plan
     Builder) are overlaid on top so users see their in-progress state.
     """
-    where = _line_where(plan_year, wholesaler, brand, prc, alias="l")
+    where = _line_where(plan_year, wholesaler, brand, prc_group, alias="l")
     # One row per (line, promo week); lines with no promo still appear once (null week).
     rows = await run_query(request, f"""
         WITH page AS (
@@ -187,7 +187,7 @@ async def budget(
     Total discount $ = sum(base_pptr - rec_pptr) over promo weeks; plus line count,
     promo-week count, and lines-on-promo. One cheap aggregate query (not paged).
     """
-    lwhere = _line_where(plan_year, wholesaler, brand, prc, alias="l")
+    lwhere = _line_where(plan_year, wholesaler, brand, prc_group, alias="l")
     agg = await run_query(request, f"""
         WITH lines AS (
           SELECT plan_year, wholesaler_id, brand_code, prc_code, base_pptr
@@ -222,7 +222,7 @@ async def final_plan_export(
     application pulls once pricing is finally approved. Returns approved
     fact_promo_week rows joined to their line metadata.
     """
-    where = _line_where(2027, wholesaler, brand, prc, alias="l")
+    where = _line_where(2027, wholesaler, brand, prc_group, alias="l")
     rows = await run_query(request, f"""
         SELECT l.wholesaler_id, l.wholesaler_name, l.brand_code, l.brand_name,
                l.prc_code, l.prc_group_name, l.deal_description, l.base_pptr,
