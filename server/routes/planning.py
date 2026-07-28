@@ -46,6 +46,15 @@ CREATE TABLE IF NOT EXISTS plan_activity (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_plan_activity_sandbox ON plan_activity (sandbox_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS plan_review (
+    sandbox_id TEXT NOT NULL,
+    plan_year INT NOT NULL,
+    line_key TEXT NOT NULL,        -- "wholesaler_id|brand_code|prc_code"
+    reviewed_by TEXT,
+    reviewed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (sandbox_id, plan_year, line_key)
+);
+CREATE INDEX IF NOT EXISTS idx_plan_review_sandbox ON plan_review (sandbox_id, plan_year);
 """
 
 _ready = False
@@ -108,6 +117,23 @@ async def get_sandbox_edits(sandbox_id: str, plan_year: int) -> list[dict]:
         ]
     except Exception:
         return []
+
+
+async def get_reviewed_keys(sandbox_id: str, plan_year: int) -> set[str]:
+    """Set of line_keys marked reviewed in this sandbox + plan year."""
+    await _ensure_tables()
+    pool = await db.get_pool()
+    if not pool:
+        return set()
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT line_key FROM plan_review WHERE sandbox_id = $1 AND plan_year = $2",
+                sandbox_id, plan_year,
+            )
+        return {r["line_key"] for r in rows}
+    except Exception:
+        return set()
 
 
 # ── Write-back endpoints ──
@@ -177,6 +203,49 @@ async def save_edits(req: EditRequest, request: Request):
     }
 
 
+class ReviewRequest(BaseModel):
+    sandbox_id: str
+    plan_year: int = 2027
+    line_keys: list[str]
+    reviewed: bool = True
+
+
+@router.post("/planning/review")
+async def mark_reviewed(req: ReviewRequest, request: Request):
+    """Mark (or unmark) one or many grid lines as reviewed by a regional coordinator.
+
+    Reviewing is a lightweight per-line flag (kept in Lakebase) that coordinators set
+    before the plan is submitted to the central CSO team. Bulk list supports the
+    'review selected rows' action.
+    """
+    await _ensure_tables()
+    pool = await db.get_pool()
+    if not pool:
+        raise HTTPException(status_code=503, detail="Lakebase not available — write-back disabled")
+    if not req.line_keys:
+        return {"ok": True, "reviewed": 0}
+    actor = _actor(request)
+    now = datetime.now(timezone.utc)
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            if req.reviewed:
+                await conn.executemany(
+                    """INSERT INTO plan_review (sandbox_id, plan_year, line_key, reviewed_by, reviewed_at)
+                       VALUES ($1,$2,$3,$4,$5)
+                       ON CONFLICT (sandbox_id, plan_year, line_key)
+                       DO UPDATE SET reviewed_by = EXCLUDED.reviewed_by, reviewed_at = EXCLUDED.reviewed_at""",
+                    [(req.sandbox_id, req.plan_year, k, actor, now) for k in req.line_keys],
+                )
+                await _log(conn, req.sandbox_id, actor, "review", f"Marked {len(req.line_keys)} line(s) reviewed")
+            else:
+                await conn.execute(
+                    "DELETE FROM plan_review WHERE sandbox_id = $1 AND plan_year = $2 AND line_key = ANY($3::text[])",
+                    req.sandbox_id, req.plan_year, req.line_keys,
+                )
+                await _log(conn, req.sandbox_id, actor, "unreview", f"Cleared review on {len(req.line_keys)} line(s)")
+    return {"ok": True, "reviewed": len(req.line_keys) if req.reviewed else 0}
+
+
 class ResetRequest(BaseModel):
     sandbox_id: str
     plan_year: int = 2027
@@ -192,6 +261,10 @@ async def reset_sandbox(req: ResetRequest, request: Request):
     async with pool.acquire() as conn:
         res = await conn.execute(
             "DELETE FROM plan_edit WHERE sandbox_id = $1 AND plan_year = $2",
+            req.sandbox_id, req.plan_year,
+        )
+        await conn.execute(
+            "DELETE FROM plan_review WHERE sandbox_id = $1 AND plan_year = $2",
             req.sandbox_id, req.plan_year,
         )
         await _log(conn, req.sandbox_id, _actor(request), "reset", "Reverted all sandbox edits")
@@ -236,9 +309,8 @@ async def submit_sandbox(req: SubmitRequest, request: Request):
         USING (
           SELECT s.wholesaler_id, s.brand_code, s.prc_code, s.week_number,
                  s.incremental_discount, s.absolute_discount,
-                 CASE WHEN s.absolute_discount IS NOT NULL
-                      THEN round(p.base_pptr - s.absolute_discount, 2)
-                      ELSE round(p.base_pptr * (1 - coalesce(s.incremental_discount, 0)), 2) END AS rec_pptr
+                 -- both discounts are dollars off per case
+                 round(p.base_pptr - coalesce(s.absolute_discount, s.incremental_discount, 0), 2) AS rec_pptr
           FROM (VALUES {values})
             AS s(wholesaler_id, brand_code, prc_code, week_number, incremental_discount, absolute_discount)
           JOIN {FQ}.fact_price_plan p
@@ -264,6 +336,10 @@ async def submit_sandbox(req: SubmitRequest, request: Request):
     async with pool.acquire() as conn:
         await conn.execute(
             "DELETE FROM plan_edit WHERE sandbox_id = $1 AND plan_year = $2",
+            req.sandbox_id, req.plan_year,
+        )
+        await conn.execute(
+            "DELETE FROM plan_review WHERE sandbox_id = $1 AND plan_year = $2",
             req.sandbox_id, req.plan_year,
         )
         await _log(conn, req.sandbox_id, _actor(request), "submit",

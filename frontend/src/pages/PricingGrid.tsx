@@ -1,18 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Loader2, RotateCcw, Send, Check, Percent, DollarSign, X, Database,
-  ArrowRight, CheckCircle2, Download, Info,
+  Loader2, RotateCcw, Send, Check, DollarSign, X, Database,
+  ArrowRight, CheckCircle2, Download, Info, ClipboardCheck,
 } from 'lucide-react';
 import { api } from '../api';
-import type { IsoWeek, GridLine, Budget, CellEdit, SubmitResult, FinalExport } from '../api';
+import type { IsoWeek, GridLine, PromoCell, Budget, CellEdit, SubmitResult, FinalExport } from '../api';
 import { useFilters, TAB_PLAN_YEAR } from '../store';
 import type { PlanTab, PlanView } from '../store';
 import FilterBar from '../components/FilterBar';
-import { fmtInt, fmtMoney, fmtPct, fmtPrice, discountColor, cellDepth, recPptr } from '../format';
+import { fmtInt, fmtMoney, fmtPrice, discountColor, cellDepth, cellOff, recPptr } from '../format';
 
 const PAGE = 100;
-const ROW_H = 34;
-const CELL_W = 52;
+const ROW_H = 44;
+const CELL_W = 62;
 const OVERSCAN = 8;
 
 // Stable per-browser sandbox id so in-progress edits survive reloads.
@@ -33,18 +33,20 @@ const VIEWS: { id: PlanView; label: string }[] = [
 ];
 
 // Left (frozen) metadata columns and their widths.
-const LEFT_COLS: { key: keyof GridLine | 'brand'; label: string; w: number }[] = [
-  { key: 'wholesaler_id', label: 'Wholesaler', w: 190 },
-  { key: 'brand_code', label: 'Brand', w: 52 },
-  { key: 'brand_name', label: 'Brand Name', w: 150 },
-  { key: 'prc_code', label: 'PRC', w: 60 },
-  { key: 'prc_group_name', label: 'PRC Group', w: 130 },
-  { key: 'qd_min', label: 'QD Min', w: 56 },
-  { key: 'qd_max', label: 'QD Max', w: 56 },
-  { key: 'deal_description', label: 'Deal', w: 120 },
+const LEFT_COLS: { key: string; label: string; w: number }[] = [
+  { key: 'wholesaler_id', label: 'Wholesaler', w: 210 },
+  { key: 'brand_code', label: 'Brand', w: 60 },
+  { key: 'brand_name', label: 'Brand Name', w: 168 },
+  { key: 'prc_code', label: 'PRC', w: 70 },
+  { key: 'prc_group_name', label: 'PRC Group', w: 150 },
+  { key: 'qd_min', label: 'QD Min', w: 66 },
+  { key: 'qd_max', label: 'QD Max', w: 66 },
+  { key: 'deal_description', label: 'Deal', w: 138 },
+  { key: 'curr_max_discount', label: 'Max Disc', w: 78 },
 ];
 const LEFT_W = LEFT_COLS.reduce((s, c) => s + c.w, 0);
-const CHECK_W = 34;
+const CHECK_W = 40;
+const REVIEW_W = 44;
 
 export default function PricingGrid({ tab }: { tab: PlanTab }) {
   const planYear = TAB_PLAN_YEAR[tab];
@@ -67,6 +69,7 @@ export default function PricingGrid({ tab }: { tab: PlanTab }) {
   const [busy, setBusy] = useState(false);
   const [submitResult, setSubmitResult] = useState<SubmitResult | null>(null);
   const [finalExport, setFinalExport] = useState<FinalExport | null>(null);
+  const [editing, setEditing] = useState<{ key: string; week: number } | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -74,14 +77,13 @@ export default function PricingGrid({ tab }: { tab: PlanTab }) {
 
   const filterQ = { wholesaler: filters.wholesaler, brand: filters.brand, prc_group: filters.prc_group };
 
-  // Load the 52-week axis once.
   useEffect(() => { api.getWeeks().then((r) => setWeeks(r.weeks)).catch(() => {}); }, []);
 
-  // (Re)load the grid whenever tab / filters change.
   const reload = useCallback(() => {
     setLoading(true);
     setLines([]);
     setSelected(new Set());
+    setEditing(null);
     offsetRef.current = 0;
     setHasMore(true);
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
@@ -112,7 +114,6 @@ export default function PricingGrid({ tab }: { tab: PlanTab }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadingMore, hasMore, planYear, editable, sandboxId, JSON.stringify(filterQ)]);
 
-  // Manual vertical windowing + infinite scroll.
   const onScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
     setScrollTop(el.scrollTop);
@@ -137,72 +138,101 @@ export default function PricingGrid({ tab }: { tab: PlanTab }) {
     const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n;
   });
   const toggleAll = () => setSelected(allSelected ? new Set() : new Set(lines.map((l) => l.line_key)));
+  const reviewedCount = lines.filter((l) => l.reviewed).length;
 
-  // ── Apply a discount to the selected rows across a week range (mass edit). ──
-  const applyDiscount = async (kind: 'incremental' | 'absolute', value: number, wkFrom: number, wkTo: number) => {
+  // Overlay a set of cell edits onto local state + refresh budget.
+  const overlayCells = (predicate: (l: GridLine) => boolean, weeksList: number[], inc: number | null, absd: number | null) => {
+    setLines((prev) => prev.map((l) => {
+      if (!predicate(l)) return l;
+      const cells = { ...l.cells };
+      for (const wk of weeksList) {
+        cells[String(wk)] = {
+          week: wk, incremental_discount: inc, absolute_discount: absd,
+          rec_pptr: recPptr(l.base_pptr, inc, absd),
+          approval_status: 'sandbox', source: 'sandbox',
+        };
+      }
+      return { ...l, cells };
+    }));
+    api.getBudget({ plan_year: planYear, ...filterQ }).then(setBudget).catch(() => {});
+  };
+
+  // ── Mass discount apply across selected rows × week range. ──
+  const applyDiscount = async (kind: 'incremental' | 'absolute', dollars: number, wkFrom: number, wkTo: number) => {
     const targets = lines.filter((l) => selected.has(l.line_key));
     if (!targets.length) return;
     setBusy(true);
     const edits: CellEdit[] = [];
+    const weeksList: number[] = [];
+    for (let wk = wkFrom; wk <= wkTo; wk++) weeksList.push(wk);
     for (const l of targets) {
-      for (let wk = wkFrom; wk <= wkTo; wk++) {
+      for (const wk of weeksList) {
         edits.push({
-          wholesaler_id: l.wholesaler_id, brand_code: l.brand_code, prc_code: l.prc_code,
-          week_number: wk,
-          incremental_discount: kind === 'incremental' ? value : null,
-          absolute_discount: kind === 'absolute' ? value : null,
+          wholesaler_id: l.wholesaler_id, brand_code: l.brand_code, prc_code: l.prc_code, week_number: wk,
+          incremental_discount: kind === 'incremental' ? dollars : null,
+          absolute_discount: kind === 'absolute' ? dollars : null,
         });
       }
     }
     try {
       await api.saveEdits(sandboxId, planYear, edits);
-      // Optimistic local overlay.
-      setLines((prev) => prev.map((l) => {
-        if (!selected.has(l.line_key)) return l;
-        const cells = { ...l.cells };
-        for (let wk = wkFrom; wk <= wkTo; wk++) {
-          const inc = kind === 'incremental' ? value : null;
-          const absd = kind === 'absolute' ? value : null;
-          cells[String(wk)] = {
-            week: wk, incremental_discount: inc, absolute_discount: absd,
-            rec_pptr: recPptr(l.base_pptr, inc, absd),
-            approval_status: 'sandbox', source: 'sandbox',
-          };
-        }
-        return { ...l, cells };
-      }));
-      api.getBudget({ plan_year: planYear, ...filterQ }).then(setBudget).catch(() => {});
+      overlayCells((l) => selected.has(l.line_key), weeksList, kind === 'incremental' ? dollars : null, kind === 'absolute' ? dollars : null);
     } finally {
       setBusy(false);
       setPopup(null);
     }
   };
 
+  // ── Inline single-cell edit. The value entered depends on the active view. ──
+  const commitCellEdit = async (line: GridLine, week: number, raw: string) => {
+    setEditing(null);
+    const val = parseFloat(raw);
+    if (isNaN(val)) return;
+    let inc: number | null = null, absd: number | null = null;
+    if (view === 'incremental') inc = val;               // dollars off
+    else if (view === 'absolute') absd = val;            // dollars off
+    else absd = +(line.base_pptr - val).toFixed(2);      // REC PPTR view: entered price → $ off
+    const edit: CellEdit = {
+      wholesaler_id: line.wholesaler_id, brand_code: line.brand_code, prc_code: line.prc_code,
+      week_number: week, incremental_discount: inc, absolute_discount: absd,
+    };
+    try {
+      await api.saveEdits(sandboxId, planYear, [edit]);
+      overlayCells((l) => l.line_key === line.line_key, [week], inc, absd);
+    } catch { /* surfaced by api layer */ }
+  };
+
+  // ── Review (per-row + bulk) ──
+  const setReviewed = async (keys: string[], reviewed: boolean) => {
+    if (!keys.length) return;
+    setBusy(true);
+    try {
+      await api.markReviewed(sandboxId, planYear, keys, reviewed);
+      const ks = new Set(keys);
+      setLines((prev) => prev.map((l) => ks.has(l.line_key) ? { ...l, reviewed } : l));
+    } finally { setBusy(false); }
+  };
+  const reviewSelected = () => {
+    const keys = lines.filter((l) => selected.has(l.line_key)).map((l) => l.line_key);
+    const allReviewed = keys.length > 0 && keys.every((k) => lines.find((l) => l.line_key === k)?.reviewed);
+    setReviewed(keys, !allReviewed);
+  };
+
   const resetAll = async () => {
     setBusy(true);
-    try {
-      await api.resetSandbox(sandboxId, planYear);
-      reload();
-    } finally { setBusy(false); }
+    try { await api.resetSandbox(sandboxId, planYear); reload(); }
+    finally { setBusy(false); }
   };
-
   const submit = async () => {
     setBusy(true);
-    try {
-      const r = await api.submitSandbox(sandboxId, planYear);
-      setSubmitResult(r);
-      reload();
-    } finally { setBusy(false); }
+    try { const r = await api.submitSandbox(sandboxId, planYear); setSubmitResult(r); reload(); }
+    finally { setBusy(false); }
   };
-
   const approve = async () => {
     setBusy(true);
-    try {
-      await api.approveFinal({ plan_year: planYear, ...filterQ });
-      reload();
-    } finally { setBusy(false); }
+    try { await api.approveFinal({ plan_year: planYear, ...filterQ }); reload(); }
+    finally { setBusy(false); }
   };
-
   const pushDownstream = async () => {
     setBusy(true);
     try { setFinalExport(await api.getFinalExport(filterQ)); }
@@ -210,17 +240,18 @@ export default function PricingGrid({ tab }: { tab: PlanTab }) {
   };
 
   const totalH = lines.length * ROW_H;
+  const selCount = selected.size;
 
   return (
     <div className="h-full flex flex-col">
-      {/* Header: title, view toggle, actions */}
+      {/* Header: view toggle + actions */}
       <div className="px-6 pt-4 pb-3 border-b border-[var(--border)] space-y-3">
         <div className="flex items-center justify-between gap-4 flex-wrap">
-          <div className="flex items-center gap-2 rounded-lg bg-[var(--bg-tertiary)] p-0.5">
+          <div className="flex items-center gap-1 rounded-lg bg-[var(--bg-tertiary)] p-1">
             {VIEWS.map((v) => (
               <button key={v.id} onClick={() => setView(v.id)}
-                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
-                  view === v.id ? 'bg-[var(--bg-secondary)] text-[var(--accent)] shadow-sm' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                className={`px-3.5 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                  view === v.id ? 'bg-[var(--accent)] text-black shadow-sm' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
                 }`}>
                 {v.label}
               </button>
@@ -230,21 +261,25 @@ export default function PricingGrid({ tab }: { tab: PlanTab }) {
           <div className="flex items-center gap-2">
             {editable && (
               <>
-                <span className="text-xs text-[var(--text-secondary)]">{selected.size} selected</span>
-                <button disabled={!selected.size || busy} onClick={() => setPopup('incremental')}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--bg-secondary)] border border-[var(--border)] text-sm font-medium disabled:opacity-40 hover:border-[var(--accent)]">
-                  <Percent className="w-3.5 h-3.5" /> Incremental discount
+                <span className="text-sm text-[var(--text-secondary)]">{selCount} selected</span>
+                <button disabled={!selCount || busy} onClick={() => setPopup('incremental')}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-[var(--bg-secondary)] border border-[var(--border)] text-sm font-medium disabled:opacity-40 hover:border-[var(--accent)]">
+                  <DollarSign className="w-4 h-4" /> Incremental $
                 </button>
-                <button disabled={!selected.size || busy} onClick={() => setPopup('absolute')}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--bg-secondary)] border border-[var(--border)] text-sm font-medium disabled:opacity-40 hover:border-[var(--accent)]">
-                  <DollarSign className="w-3.5 h-3.5" /> Absolute discount
+                <button disabled={!selCount || busy} onClick={() => setPopup('absolute')}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-[var(--bg-secondary)] border border-[var(--border)] text-sm font-medium disabled:opacity-40 hover:border-[var(--accent)]">
+                  <DollarSign className="w-4 h-4" /> Absolute $
+                </button>
+                <button disabled={!selCount || busy} onClick={reviewSelected} title="Mark selected rows reviewed"
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-[var(--bg-secondary)] border border-[var(--border)] text-sm font-medium disabled:opacity-40 hover:border-[var(--success)] hover:text-[var(--success)]">
+                  <ClipboardCheck className="w-4 h-4" /> Review selected
                 </button>
                 <button disabled={busy} onClick={resetAll} title="Revert all sandbox edits"
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--bg-secondary)] border border-[var(--border)] text-sm font-medium disabled:opacity-40 hover:border-[var(--danger)] hover:text-[var(--danger)]">
-                  <RotateCcw className="w-3.5 h-3.5" /> Reset {planYear} plan
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-[var(--bg-secondary)] border border-[var(--border)] text-sm font-medium disabled:opacity-40 hover:border-[var(--danger)] hover:text-[var(--danger)]">
+                  <RotateCcw className="w-4 h-4" /> Reset {planYear}
                 </button>
                 <button disabled={busy} onClick={submit}
-                  className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-sm font-semibold disabled:opacity-40">
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-black text-sm font-semibold disabled:opacity-40">
                   {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />} Submit to production
                 </button>
               </>
@@ -252,11 +287,11 @@ export default function PricingGrid({ tab }: { tab: PlanTab }) {
             {isFinal && (
               <>
                 <button disabled={busy} onClick={approve}
-                  className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold disabled:opacity-40">
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[var(--success)] hover:brightness-110 text-black text-sm font-semibold disabled:opacity-40">
                   {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />} Approve pending
                 </button>
                 <button disabled={busy} onClick={pushDownstream}
-                  className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-sm font-semibold disabled:opacity-40">
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-black text-sm font-semibold disabled:opacity-40">
                   <Download className="w-4 h-4" /> Push downstream
                 </button>
               </>
@@ -264,7 +299,7 @@ export default function PricingGrid({ tab }: { tab: PlanTab }) {
           </div>
         </div>
 
-        <BudgetBar budget={budget} planYear={planYear} />
+        <BudgetBar budget={budget} planYear={planYear} reviewedCount={editable ? reviewedCount : undefined} />
         <FilterBar />
         {submitResult && <SubmitPanel result={submitResult} onClose={() => setSubmitResult(null)} />}
         {finalExport && <FinalExportPanel data={finalExport} onClose={() => setFinalExport(null)} />}
@@ -274,24 +309,25 @@ export default function PricingGrid({ tab }: { tab: PlanTab }) {
       {loading ? (
         <div className="flex-1 flex items-center justify-center text-[var(--text-secondary)]"><Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading grid…</div>
       ) : lines.length === 0 ? (
-        <div className="flex-1 flex items-center justify-center text-[var(--text-secondary)] text-sm">No lines match the current filters.</div>
+        <div className="flex-1 flex items-center justify-center text-[var(--text-secondary)] text-base">No lines match the current filters.</div>
       ) : (
         <div ref={scrollRef} onScroll={onScroll} className="flex-1 overflow-auto">
-          <div style={{ width: CHECK_W + LEFT_W + weeks.length * CELL_W, position: 'relative' }}>
+          <div style={{ width: CHECK_W + REVIEW_W + LEFT_W + weeks.length * CELL_W, position: 'relative' }}>
             {/* Sticky header */}
-            <div className="sticky top-0 z-20 flex bg-[var(--bg-tertiary)] border-b border-[var(--border)]" style={{ height: ROW_H }}>
+            <div className="sticky top-0 z-20 flex bg-[var(--bg-tertiary)] border-b border-[var(--border-strong)]" style={{ height: ROW_H }}>
               <div className="sticky left-0 z-30 flex items-center justify-center bg-[var(--bg-tertiary)] border-r border-[var(--border)]" style={{ width: CHECK_W }}>
-                {editable && <input type="checkbox" checked={allSelected} onChange={toggleAll} className="accent-[var(--accent)] cursor-pointer" />}
+                {editable && <input type="checkbox" checked={allSelected} onChange={toggleAll} className="w-4 h-4 cursor-pointer" />}
               </div>
-              <div className="sticky z-30 flex bg-[var(--bg-tertiary)] border-r-2 border-[var(--border-strong)]" style={{ left: CHECK_W }}>
+              {editable && <div className="sticky z-30 flex items-center justify-center bg-[var(--bg-tertiary)] border-r border-[var(--border)] text-[11px] font-semibold uppercase text-[var(--text-secondary)]" style={{ left: CHECK_W, width: REVIEW_W }}>Rev</div>}
+              <div className="sticky z-30 flex bg-[var(--bg-tertiary)] border-r-2 border-[var(--border-strong)]" style={{ left: CHECK_W + (editable ? REVIEW_W : 0) }}>
                 {LEFT_COLS.map((c) => (
-                  <div key={c.key as string} className="flex items-center px-2 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-secondary)]" style={{ width: c.w }}>{c.label}</div>
+                  <div key={c.key} className="flex items-center px-2 text-[11px] font-semibold uppercase tracking-wide text-[var(--text-secondary)]" style={{ width: c.w }}>{c.label}</div>
                 ))}
               </div>
               {weeks.map((w) => (
                 <div key={w.week_number} className="flex flex-col items-center justify-center border-r border-[var(--border)]" style={{ width: CELL_W }}>
-                  <span className="text-[10px] font-semibold text-[var(--text-primary)] leading-none">{w.iso_label}</span>
-                  <span className="text-[8px] text-[var(--text-tertiary)] leading-none mt-0.5">{w.date_range_label}</span>
+                  <span className="text-[12px] font-semibold text-[var(--text-primary)] leading-none">{w.iso_label}</span>
+                  <span className="text-[9px] text-[var(--text-tertiary)] leading-none mt-0.5">{w.date_range_label}</span>
                 </div>
               ))}
             </div>
@@ -301,15 +337,22 @@ export default function PricingGrid({ tab }: { tab: PlanTab }) {
               {visible.map((line, i) => {
                 const rowIndex = start + i;
                 const isSel = selected.has(line.line_key);
+                const rowBg = isSel ? 'bg-[var(--accent-dim)]' : rowIndex % 2 ? 'bg-[var(--bg-primary)]' : 'bg-[var(--bg-secondary)]';
                 return (
-                  <div key={line.line_key} className={`flex items-stretch absolute left-0 ${isSel ? 'bg-[var(--accent-dim)]' : rowIndex % 2 ? 'bg-[var(--bg-primary)]' : 'bg-[var(--bg-secondary)]'}`}
+                  <div key={line.line_key} className={`flex items-stretch absolute left-0 ${rowBg}`}
                     style={{ top: rowIndex * ROW_H, height: ROW_H, width: '100%' }}>
-                    {/* checkbox */}
-                    <div className={`sticky left-0 z-10 flex items-center justify-center border-r border-b border-[var(--border)] ${isSel ? 'bg-[var(--accent-dim)]' : rowIndex % 2 ? 'bg-[var(--bg-primary)]' : 'bg-[var(--bg-secondary)]'}`} style={{ width: CHECK_W }}>
-                      {editable && <input type="checkbox" checked={isSel} onChange={() => toggleRow(line.line_key)} className="accent-[var(--accent)] cursor-pointer" />}
+                    <div className={`sticky left-0 z-10 flex items-center justify-center border-r border-b border-[var(--border)] ${rowBg}`} style={{ width: CHECK_W }}>
+                      {editable && <input type="checkbox" checked={isSel} onChange={() => toggleRow(line.line_key)} className="w-4 h-4 cursor-pointer" />}
                     </div>
-                    {/* frozen metadata */}
-                    <div className={`sticky z-10 flex border-r-2 border-b border-[var(--border-strong)] ${isSel ? 'bg-[var(--accent-dim)]' : rowIndex % 2 ? 'bg-[var(--bg-primary)]' : 'bg-[var(--bg-secondary)]'}`} style={{ left: CHECK_W }}>
+                    {editable && (
+                      <div className={`sticky z-10 flex items-center justify-center border-r border-b border-[var(--border)] ${rowBg}`} style={{ left: CHECK_W, width: REVIEW_W }}>
+                        <button onClick={() => setReviewed([line.line_key], !line.reviewed)} title={line.reviewed ? 'Reviewed — click to clear' : 'Mark reviewed'}
+                          className={`w-6 h-6 rounded-full flex items-center justify-center transition-colors ${line.reviewed ? 'bg-[var(--success)] text-black' : 'border border-[var(--border-strong)] text-[var(--text-tertiary)] hover:border-[var(--success)] hover:text-[var(--success)]'}`}>
+                          <Check className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
+                    <div className={`sticky z-10 flex border-r-2 border-b border-[var(--border-strong)] ${rowBg} ${line.reviewed ? 'shadow-[inset_3px_0_0_var(--success)]' : ''}`} style={{ left: CHECK_W + (editable ? REVIEW_W : 0) }}>
                       <MetaCell w={LEFT_COLS[0].w} title={line.wholesaler_name}><span className="font-medium">{line.wholesaler_id}</span> <span className="text-[var(--text-tertiary)]">{line.wholesaler_name}</span></MetaCell>
                       <MetaCell w={LEFT_COLS[1].w}>{line.brand_code}</MetaCell>
                       <MetaCell w={LEFT_COLS[2].w} title={line.brand_name}>{line.brand_name}</MetaCell>
@@ -318,30 +361,38 @@ export default function PricingGrid({ tab }: { tab: PlanTab }) {
                       <MetaCell w={LEFT_COLS[5].w}>{fmtInt(line.qd_min)}</MetaCell>
                       <MetaCell w={LEFT_COLS[6].w}>{fmtInt(line.qd_max)}</MetaCell>
                       <MetaCell w={LEFT_COLS[7].w} title={line.deal_description}>{line.deal_description}</MetaCell>
+                      <MetaCell w={LEFT_COLS[8].w}>{fmtMoney(line.curr_max_discount)}</MetaCell>
                     </div>
-                    {/* week cells */}
                     {weeks.map((w) => {
                       const cell = line.cells[String(w.week_number)];
-                      return <WeekCell key={w.week_number} line={line} week={w} cell={cell} view={view} />;
+                      const isEditing = editable && editing?.key === line.line_key && editing?.week === w.week_number;
+                      return (
+                        <WeekCell key={w.week_number} line={line} week={w} cell={cell} view={view}
+                          editable={editable} isEditing={isEditing}
+                          onStartEdit={() => editable && setEditing({ key: line.line_key, week: w.week_number })}
+                          onCommit={(raw) => commitCellEdit(line, w.week_number, raw)}
+                          onCancel={() => setEditing(null)} />
+                      );
                     })}
                   </div>
                 );
               })}
             </div>
           </div>
-          {loadingMore && <div className="flex items-center justify-center py-3 text-[var(--text-secondary)] text-xs"><Loader2 className="w-4 h-4 animate-spin mr-1.5" /> Loading more…</div>}
+          {loadingMore && <div className="flex items-center justify-center py-3 text-[var(--text-secondary)] text-sm"><Loader2 className="w-4 h-4 animate-spin mr-1.5" /> Loading more…</div>}
         </div>
       )}
       {!loading && (
-        <div className="shrink-0 px-6 py-1.5 border-t border-[var(--border)] text-[11px] text-[var(--text-secondary)] flex items-center gap-3">
+        <div className="shrink-0 px-6 py-2 border-t border-[var(--border)] text-[12px] text-[var(--text-secondary)] flex items-center gap-3">
           <span>{fmtInt(lines.length)} lines loaded{hasMore ? ' (scroll for more)' : ''}</span>
           {budget && <span>· {fmtInt(budget.n_lines)} total in filter</span>}
-          {editable && <span className="ml-auto inline-flex items-center gap-1"><Info className="w-3 h-3" /> Sandbox edits are private until you Submit</span>}
+          {editable && <span>· {fmtInt(reviewedCount)} reviewed</span>}
+          {editable && <span className="ml-auto inline-flex items-center gap-1"><Info className="w-3.5 h-3.5" /> Click a week cell to edit · sandbox edits are private until you Submit</span>}
         </div>
       )}
 
       {popup && (
-        <DiscountPopup kind={popup} weeks={weeks} count={selected.size}
+        <DiscountPopup kind={popup} weeks={weeks} count={selCount}
           onClose={() => setPopup(null)} onApply={(v, f, t) => applyDiscount(popup, v, f, t)} busy={busy} />
       )}
     </div>
@@ -349,47 +400,71 @@ export default function PricingGrid({ tab }: { tab: PlanTab }) {
 }
 
 function MetaCell({ w, title, children }: { w: number; title?: string; children: React.ReactNode }) {
-  return <div className="flex items-center px-2 text-[11px] text-[var(--text-primary)] truncate" style={{ width: w }} title={title}>{children}</div>;
+  return <div className="flex items-center px-2 text-[13px] text-[var(--text-primary)] truncate" style={{ width: w }} title={title}>{children}</div>;
 }
 
-function WeekCell({ line, week, cell, view }: { line: GridLine; week: IsoWeek; cell?: any; view: PlanView }) {
+function WeekCell({ line, week, cell, view, editable, isEditing, onStartEdit, onCommit, onCancel }: {
+  line: GridLine; week: IsoWeek; cell?: PromoCell; view: PlanView; editable: boolean;
+  isEditing: boolean; onStartEdit: () => void; onCommit: (raw: string) => void; onCancel: () => void;
+}) {
   const hasPromo = !!cell && (cell.incremental_discount != null || cell.absolute_discount != null);
-  const depth = hasPromo ? cellDepth(line.base_pptr, cell.incremental_discount, cell.absolute_discount) : 0;
+  const depth = hasPromo ? cellDepth(line.base_pptr, cell!.incremental_discount, cell!.absolute_discount) : 0;
   const bg = hasPromo ? discountColor(depth) : 'transparent';
   const isSandbox = cell?.source === 'sandbox';
 
+  // Every view shows a dollar amount.
   let text = '';
   if (hasPromo) {
-    if (view === 'incremental') text = cell.incremental_discount != null ? fmtPct(cell.incremental_discount) : (cell.absolute_discount != null ? `-${fmtPrice(cell.absolute_discount)}` : '');
-    else if (view === 'absolute') text = cell.absolute_discount != null ? fmtPrice(cell.absolute_discount) : (cell.incremental_discount != null ? fmtPrice(line.base_pptr - (cell.rec_pptr ?? line.base_pptr)) : '');
-    else text = fmtPrice(cell.rec_pptr);
+    if (view === 'rec_pptr') text = fmtPrice(cell!.rec_pptr);
+    else text = fmtPrice(cellOff(cell!.incremental_discount, cell!.absolute_discount)); // $ off
   }
-  const tip = hasPromo ? `${line.plan_year}-${week.iso_label} ${week.date_range_label} · REC PPTR ${fmtPrice(cell.rec_pptr)}${isSandbox ? ' (sandbox)' : cell.approval_status ? ` (${cell.approval_status})` : ''}` : `${week.iso_label} ${week.date_range_label}`;
+
+  // Initial value shown in the editor for the active view.
+  const editInit = view === 'rec_pptr'
+    ? fmtPrice(cell?.rec_pptr ?? line.base_pptr)
+    : (hasPromo ? fmtPrice(cellOff(cell!.incremental_discount, cell!.absolute_discount)) : '');
+
+  const tip = hasPromo
+    ? `${line.plan_year}-${week.iso_label} ${week.date_range_label} · $${fmtPrice(cellOff(cell!.incremental_discount, cell!.absolute_discount))} off · REC PPTR $${fmtPrice(cell!.rec_pptr)}${isSandbox ? ' (sandbox)' : cell!.approval_status ? ` (${cell!.approval_status})` : ''}`
+    : `${week.iso_label} ${week.date_range_label}${editable ? ' · click to add a discount' : ''}`;
+
+  if (isEditing) {
+    return (
+      <div className="flex items-center justify-center border-r border-b border-[var(--border)]" style={{ width: CELL_W, background: 'var(--bg-hover)' }}>
+        <input autoFocus defaultValue={editInit} type="number" step={0.25}
+          onBlur={(e) => onCommit(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') onCommit((e.target as HTMLInputElement).value); if (e.key === 'Escape') onCancel(); }}
+          className="w-full h-full text-center text-[13px] tabular-nums bg-transparent text-[var(--text-primary)] outline-none ring-2 ring-inset ring-[var(--accent)] rounded-sm px-0.5" />
+      </div>
+    );
+  }
 
   return (
-    <div className={`flex items-center justify-center border-r border-b border-[var(--border)] text-[10px] tabular-nums ${isSandbox ? 'ring-1 ring-inset ring-[var(--accent)] font-semibold' : ''}`}
-      style={{ width: CELL_W, background: bg }} title={tip}>
+    <div onClick={editable ? onStartEdit : undefined}
+      className={`flex items-center justify-center border-r border-b border-[var(--border)] text-[13px] tabular-nums ${editable ? 'cursor-pointer hover:ring-1 hover:ring-inset hover:ring-[var(--accent)]' : ''} ${isSandbox ? 'ring-2 ring-inset ring-[var(--accent)] font-semibold' : ''}`}
+      style={{ width: CELL_W, background: bg, color: hasPromo ? '#1a1206' : undefined }} title={tip}>
       {text}
     </div>
   );
 }
 
-function BudgetBar({ budget, planYear }: { budget: Budget | null; planYear: number }) {
+function BudgetBar({ budget, planYear, reviewedCount }: { budget: Budget | null; planYear: number; reviewedCount?: number }) {
   const items = [
     { label: 'Total discount ($/case)', value: budget ? fmtMoney(budget.total_discount) : '—' },
-    { label: 'Avg incremental discount', value: budget ? fmtPct(budget.avg_incremental_discount) : '—' },
+    { label: 'Avg discount ($/case)', value: budget ? fmtMoney(budget.avg_incremental_discount) : '—' },
     { label: 'Lines on promo', value: budget ? `${fmtInt(budget.n_lines_on_promo)} / ${fmtInt(budget.n_lines)}` : '—' },
     { label: 'Promo weeks', value: budget ? fmtInt(budget.n_promo_weeks) : '—' },
   ];
+  if (reviewedCount !== undefined) items.push({ label: 'Reviewed (loaded)', value: fmtInt(reviewedCount) });
   return (
     <div className="flex items-stretch gap-3 flex-wrap">
-      <div className="flex items-center px-3 rounded-lg bg-[var(--accent)] text-white">
-        <span className="text-xs font-semibold">Budget · {planYear}</span>
+      <div className="flex items-center px-4 rounded-lg text-black font-bold text-sm" style={{ background: 'var(--grad-header)' }}>
+        Budget · {planYear}
       </div>
       {items.map((it) => (
-        <div key={it.label} className="px-3 py-1.5 rounded-lg bg-[var(--bg-secondary)] border border-[var(--border)]">
-          <p className="text-[10px] text-[var(--text-secondary)] leading-tight">{it.label}</p>
-          <p className="text-sm font-bold text-[var(--text-primary)] leading-tight">{it.value}</p>
+        <div key={it.label} className="px-3.5 py-2 rounded-lg bg-[var(--bg-secondary)] border border-[var(--border)]">
+          <p className="text-[11px] text-[var(--text-secondary)] leading-tight">{it.label}</p>
+          <p className="text-base font-bold text-[var(--text-primary)] leading-tight tabular-nums">{it.value}</p>
         </div>
       ))}
     </div>
@@ -400,43 +475,40 @@ function DiscountPopup({ kind, weeks, count, onClose, onApply, busy }: {
   kind: 'incremental' | 'absolute'; weeks: IsoWeek[]; count: number;
   onClose: () => void; onApply: (value: number, wkFrom: number, wkTo: number) => void; busy: boolean;
 }) {
-  const [value, setValue] = useState(kind === 'incremental' ? 10 : 5);
+  const [value, setValue] = useState(kind === 'incremental' ? 1.5 : 2.0);
   const [wkFrom, setWkFrom] = useState(1);
   const [wkTo, setWkTo] = useState(4);
   const maxWk = weeks.length || 52;
-  const apply = () => {
-    const v = kind === 'incremental' ? value / 100 : value;
-    onApply(v, Math.min(wkFrom, wkTo), Math.max(wkFrom, wkTo));
-  };
+  const apply = () => onApply(value, Math.min(wkFrom, wkTo), Math.max(wkFrom, wkTo));
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onClick={onClose}>
-      <div className="w-96 rounded-2xl bg-[var(--bg-secondary)] p-5 shadow-xl" onClick={(e) => e.stopPropagation()} style={{ boxShadow: 'var(--shadow-lg)' }}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
+      <div className="w-[26rem] rounded-2xl bg-[var(--bg-secondary)] p-6 border border-[var(--border)]" onClick={(e) => e.stopPropagation()} style={{ boxShadow: 'var(--shadow-lg)' }}>
         <div className="flex items-center justify-between mb-1">
-          <h3 className="text-base font-bold text-[var(--text-primary)]">{kind === 'incremental' ? 'Incremental discount' : 'Absolute discount'}</h3>
-          <button onClick={onClose} className="p-1 rounded text-[var(--text-secondary)] hover:text-[var(--text-primary)]"><X className="w-4 h-4" /></button>
+          <h3 className="text-lg font-bold text-[var(--text-primary)]">{kind === 'incremental' ? 'Incremental discount' : 'Absolute discount'}</h3>
+          <button onClick={onClose} className="p-1 rounded text-[var(--text-secondary)] hover:text-[var(--text-primary)]"><X className="w-5 h-5" /></button>
         </div>
-        <p className="text-xs text-[var(--text-secondary)] mb-4">Apply to <span className="font-semibold text-[var(--text-primary)]">{count}</span> selected line{count === 1 ? '' : 's'} across the chosen week range.</p>
+        <p className="text-sm text-[var(--text-secondary)] mb-5">Apply to <span className="font-semibold text-[var(--text-primary)]">{count}</span> selected line{count === 1 ? '' : 's'} across the chosen week range.</p>
 
-        <label className="text-[11px] font-medium text-[var(--text-secondary)]">{kind === 'incremental' ? 'Discount % off base REC PPTR' : 'Dollars off base REC PPTR (per case)'}</label>
-        <div className="flex items-center gap-2 mt-1 mb-4">
-          <input type="number" value={value} min={0} step={kind === 'incremental' ? 1 : 0.5}
+        <label className="text-xs font-medium text-[var(--text-secondary)]">Dollars off per case (subtracted from base REC PPTR)</label>
+        <div className="flex items-center gap-2 mt-1.5 mb-5">
+          <span className="text-base text-[var(--text-secondary)]">$</span>
+          <input type="number" value={value} min={0} step={0.25}
             onChange={(e) => setValue(Number(e.target.value))}
-            className="flex-1 px-2.5 py-1.5 rounded-lg border border-[var(--border)] bg-[var(--bg-primary)] text-sm" />
-          <span className="text-sm text-[var(--text-secondary)]">{kind === 'incremental' ? '%' : '$'}</span>
+            className="flex-1 px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-primary)] text-base" />
         </div>
 
-        <label className="text-[11px] font-medium text-[var(--text-secondary)]">Week range</label>
-        <div className="flex items-center gap-2 mt-1 mb-5">
-          <input type="number" value={wkFrom} min={1} max={maxWk} onChange={(e) => setWkFrom(Number(e.target.value))} className="w-20 px-2.5 py-1.5 rounded-lg border border-[var(--border)] bg-[var(--bg-primary)] text-sm" />
+        <label className="text-xs font-medium text-[var(--text-secondary)]">Week range</label>
+        <div className="flex items-center gap-2 mt-1.5 mb-6">
+          <input type="number" value={wkFrom} min={1} max={maxWk} onChange={(e) => setWkFrom(Number(e.target.value))} className="w-24 px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-primary)] text-base" />
           <ArrowRight className="w-4 h-4 text-[var(--text-secondary)]" />
-          <input type="number" value={wkTo} min={1} max={maxWk} onChange={(e) => setWkTo(Number(e.target.value))} className="w-20 px-2.5 py-1.5 rounded-lg border border-[var(--border)] bg-[var(--bg-primary)] text-sm" />
-          <span className="text-xs text-[var(--text-secondary)]">of {maxWk} weeks</span>
+          <input type="number" value={wkTo} min={1} max={maxWk} onChange={(e) => setWkTo(Number(e.target.value))} className="w-24 px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-primary)] text-base" />
+          <span className="text-sm text-[var(--text-secondary)]">of {maxWk} weeks</span>
         </div>
 
         <div className="flex justify-end gap-2">
-          <button onClick={onClose} className="px-3 py-1.5 rounded-lg text-sm text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]">Cancel</button>
+          <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]">Cancel</button>
           <button onClick={apply} disabled={busy || !count}
-            className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-sm font-semibold disabled:opacity-40">
+            className="inline-flex items-center gap-1.5 px-5 py-2 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-black text-sm font-semibold disabled:opacity-40">
             {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />} Apply
           </button>
         </div>
@@ -447,23 +519,23 @@ function DiscountPopup({ kind, weeks, count, onClose, onApply, busy }: {
 
 function SubmitPanel({ result, onClose }: { result: SubmitResult; onClose: () => void }) {
   return (
-    <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-4">
+    <div className="rounded-xl border border-[var(--success)] bg-[var(--bg-secondary)] p-4">
       <div className="flex items-start justify-between">
         <div className="flex items-center gap-2">
-          <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+          <CheckCircle2 className="w-5 h-5 text-[var(--success)]" />
           <p className="text-sm font-semibold text-[var(--text-primary)]">
             {result.submitted > 0 ? `Submitted ${result.submitted} cell(s) to production` : (result.detail || 'Nothing to submit')}
           </p>
         </div>
-        <button onClick={onClose} className="p-1 rounded text-[var(--text-secondary)] hover:text-[var(--text-primary)]"><X className="w-3.5 h-3.5" /></button>
+        <button onClick={onClose} className="p-1 rounded text-[var(--text-secondary)] hover:text-[var(--text-primary)]"><X className="w-4 h-4" /></button>
       </div>
       {result.writes && (
-        <div className="mt-2 ml-6 space-y-1.5">
+        <div className="mt-2 ml-7 space-y-1.5">
           {result.writes.map((wr, i) => (
-            <div key={i} className="flex items-start gap-2 text-xs">
-              <span className="px-1.5 py-0.5 rounded font-mono font-semibold shrink-0 bg-blue-100 text-blue-700">{wr.operation}</span>
+            <div key={i} className="flex items-start gap-2 text-sm">
+              <span className="px-1.5 py-0.5 rounded font-mono font-semibold shrink-0 bg-[var(--accent-dim)] text-[var(--accent)]">{wr.operation}</span>
               <div>
-                <span className="inline-flex items-center gap-1 text-[10px] font-medium text-[var(--text-secondary)]"><Database className="w-3 h-3" /> {wr.target}</span>
+                <span className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--text-secondary)]"><Database className="w-3.5 h-3.5" /> {wr.target}</span>
                 <span className="font-mono ml-1 text-[var(--text-primary)]">{wr.table}</span>
                 <div className="text-[var(--text-secondary)]">{wr.detail}</div>
               </div>
@@ -471,7 +543,7 @@ function SubmitPanel({ result, onClose }: { result: SubmitResult; onClose: () =>
           ))}
         </div>
       )}
-      <p className="text-[10px] text-[var(--text-secondary)] mt-2 ml-6">Sandbox edits promoted to the governed Unity Catalog table as <span className="font-medium">pending</span> — the CSO team approves them in Final Plan.</p>
+      <p className="text-[11px] text-[var(--text-secondary)] mt-2 ml-7">Sandbox edits promoted to the governed Unity Catalog table as <span className="font-medium">pending</span> — the CSO team approves them in Final Plan.</p>
     </div>
   );
 }
@@ -481,15 +553,15 @@ function FinalExportPanel({ data, onClose }: { data: FinalExport; onClose: () =>
     <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)] p-4">
       <div className="flex items-start justify-between">
         <div className="flex items-center gap-2">
-          <Download className="w-4 h-4 text-[var(--accent)]" />
+          <Download className="w-5 h-5 text-[var(--accent)]" />
           <p className="text-sm font-semibold text-[var(--text-primary)]">Downstream API payload — {fmtInt(data.count)} approved pricing rows</p>
         </div>
-        <button onClick={onClose} className="p-1 rounded text-[var(--text-secondary)] hover:text-[var(--text-primary)]"><X className="w-3.5 h-3.5" /></button>
+        <button onClick={onClose} className="p-1 rounded text-[var(--text-secondary)] hover:text-[var(--text-primary)]"><X className="w-4 h-4" /></button>
       </div>
-      <p className="text-[11px] text-[var(--text-secondary)] mt-1 ml-6 mb-2">
+      <p className="text-xs text-[var(--text-secondary)] mt-1 ml-7 mb-2">
         <span className="font-mono">GET /api/pricing/final</span> — the JSON another application pulls once pricing is finally approved.
       </p>
-      <pre className="ml-6 max-h-52 overflow-auto rounded-lg bg-[var(--bg-primary)] border border-[var(--border)] p-2 text-[10px] font-mono text-[var(--text-primary)]">
+      <pre className="ml-7 max-h-56 overflow-auto rounded-lg bg-[var(--bg-primary)] border border-[var(--border)] p-2.5 text-[11px] font-mono text-[var(--text-primary)]">
 {JSON.stringify(data.pricing.slice(0, 20), null, 2)}
 {data.pricing.length > 20 ? `\n… ${data.pricing.length - 20} more` : ''}
       </pre>

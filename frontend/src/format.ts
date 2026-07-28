@@ -40,16 +40,22 @@ export const statusColor = (status: string): string => {
   }
 };
 
-// Derive REC PPTR from a base price + discounts (mirrors the SQL/Python model).
+// Derive REC PPTR from a base price + discounts. Both incremental and absolute
+// discounts are DOLLARS OFF per case (mirrors the SQL/Python model).
 export function recPptr(basePptr: number, incremental?: number | null, absolute?: number | null): number {
-  if (absolute != null) return +(basePptr - absolute).toFixed(2);
-  if (incremental != null) return +(basePptr * (1 - incremental)).toFixed(2);
-  return +basePptr.toFixed(2);
+  const off = absolute != null ? absolute : (incremental != null ? incremental : 0);
+  return +(basePptr - off).toFixed(2);
 }
 
-// Effective discount depth (fraction) for a cell given base price.
-export function cellDepth(basePptr: number, incremental?: number | null, absolute?: number | null): number {
-  if (absolute != null) return basePptr ? absolute / basePptr : 0;
+// Dollars off per case for a cell (used to pick a tint). Absolute wins over incremental.
+export function cellOff(incremental?: number | null, absolute?: number | null): number {
+  if (absolute != null) return absolute;
   if (incremental != null) return incremental;
   return 0;
+}
+
+// Effective discount depth as a FRACTION of base (for tinting), from a dollar amount.
+export function cellDepth(basePptr: number, incremental?: number | null, absolute?: number | null): number {
+  const off = cellOff(incremental, absolute);
+  return basePptr ? off / basePptr : 0;
 }

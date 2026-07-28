@@ -192,11 +192,13 @@ def build_statements(lines: int = 200_000, prc_per_brand: int = 4) -> list[tuple
     # in-promo when it falls inside a window; only those weeks are materialized.
     #   window 1: start s1 = pmod(h,40)+3, length l1 = pmod(h,4)+2
     #   window 2: start s2 = pmod(h,20)+30, length l2 = pmod(h,3)+2 (only when pmod(h,2)=0)
-    # 2026 rows = 'committed'; 2027 rows = 'approved' (Final Plan seed) except ~1/4 'pending'.
+    # incremental_discount is DOLLARS OFF per case (not a fraction): ~$0.50-$5.40 off,
+    # subtracted from base_pptr to give rec_pptr. 2026 rows = 'committed'; 2027 rows =
+    # 'approved' (Final Plan seed) except ~1/4 'pending'.
     stmts.append(("drop fact_promo_week", f"DROP TABLE IF EXISTS {FQ}.fact_promo_week"))
     stmts.append(("fact_promo_week", f"""
         CREATE TABLE {FQ}.fact_promo_week
-        COMMENT 'Sparse per-week promo overrides. One row only where a promo changes the weekly price. Grain: plan_year x line x week_number.'
+        COMMENT 'Sparse per-week promo overrides. One row only where a promo changes the weekly price. Discounts are dollars off per case. Grain: plan_year x line x week_number.'
         AS
         WITH lines AS (
           SELECT plan_year, wholesaler_id, brand_code, prc_code, base_pptr,
@@ -209,8 +211,8 @@ def build_statements(lines: int = 200_000, prc_per_brand: int = 4) -> list[tuple
             pmod(h, 40) + 3 AS s1, pmod(h, 4) + 2 AS l1,
             pmod(h, 20) + 30 AS s2, pmod(h, 3) + 2 AS l2,
             (pmod(h, 2) = 0) AS has_second,
-            round(0.05 + pmod(h, 20) * 0.01, 3) AS disc1,   -- 5%-24%
-            round(0.05 + pmod(h, 15) * 0.01, 3) AS disc2
+            round(0.50 + pmod(h, 20) * 0.25, 2) AS disc1,   -- $0.50-$5.25 off/case
+            round(0.50 + pmod(h, 15) * 0.25, 2) AS disc2
           FROM lines
         ),
         exploded AS (
@@ -222,9 +224,10 @@ def build_statements(lines: int = 200_000, prc_per_brand: int = 4) -> list[tuple
         )
         SELECT
           plan_year, wholesaler_id, brand_code, prc_code, week_number,
-          CASE WHEN week_number >= s2 THEN disc2 ELSE disc1 END AS incremental_discount,
+          -- clamp so the discount never exceeds the base price
+          least(CASE WHEN week_number >= s2 THEN disc2 ELSE disc1 END, round(base_pptr, 2)) AS incremental_discount,
           CAST(NULL AS DOUBLE) AS absolute_discount,
-          round(base_pptr * (1 - CASE WHEN week_number >= s2 THEN disc2 ELSE disc1 END), 2) AS rec_pptr,
+          round(base_pptr - least(CASE WHEN week_number >= s2 THEN disc2 ELSE disc1 END, base_pptr), 2) AS rec_pptr,
           CASE
             WHEN plan_year = 2026 THEN 'committed'
             WHEN pmod(h, 4) = 0 THEN 'pending'

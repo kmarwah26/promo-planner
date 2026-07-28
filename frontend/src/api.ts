@@ -71,6 +71,7 @@ export interface GridLine {
   deal_description: string;
   base_pptr: number;
   curr_max_discount: number;
+  reviewed: boolean;
   cells: Record<string, PromoCell>;  // keyed by week number (string)
 }
 
@@ -166,6 +167,8 @@ export const api = {
     request<EditResult>('/planning/edit', { method: 'POST', body: JSON.stringify({ sandbox_id, plan_year, edits }) }),
   resetSandbox: (sandbox_id: string, plan_year: number) =>
     request<{ ok: boolean; deleted: number }>('/planning/reset', { method: 'POST', body: JSON.stringify({ sandbox_id, plan_year }) }),
+  markReviewed: (sandbox_id: string, plan_year: number, line_keys: string[], reviewed: boolean) =>
+    request<{ ok: boolean; reviewed: number }>('/planning/review', { method: 'POST', body: JSON.stringify({ sandbox_id, plan_year, line_keys, reviewed }) }),
   submitSandbox: (sandbox_id: string, plan_year: number) =>
     request<SubmitResult>('/planning/submit', { method: 'POST', body: JSON.stringify({ sandbox_id, plan_year }) }),
   approveFinal: (q: { plan_year: number; wholesaler?: string; brand?: string; prc_group?: string }) =>

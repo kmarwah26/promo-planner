@@ -133,6 +133,7 @@ async def grid(
                 "deal_description": r["deal_description"],
                 "base_pptr": _num(r["base_pptr"]),
                 "curr_max_discount": _num(r["curr_max_discount"]),
+                "reviewed": False,
                 "cells": {},   # week_number(str) -> cell
             }
             lines[key] = line
@@ -148,9 +149,14 @@ async def grid(
                 "source": "production",
             }
 
-    # Overlay Lakebase sandbox edits (in-progress, unsubmitted) onto matching cells.
+    # Overlay Lakebase sandbox edits (in-progress, unsubmitted) onto matching cells,
+    # and the per-line reviewed flag.
     if sandbox_id:
-        from server.routes.planning import get_sandbox_edits
+        from server.routes.planning import get_sandbox_edits, get_reviewed_keys
+        reviewed = await get_reviewed_keys(sandbox_id, plan_year)
+        for k in reviewed:
+            if k in lines:
+                lines[k]["reviewed"] = True
         edits = await get_sandbox_edits(sandbox_id, plan_year)
         for e in edits:
             key = f"{e['wholesaler_id']}|{e['brand_code']}|{e['prc_code']}"
@@ -160,7 +166,9 @@ async def grid(
             base = line["base_pptr"]
             inc = e.get("incremental_discount")
             absd = e.get("absolute_discount")
-            rec = (base - absd) if absd is not None else (base * (1 - inc) if inc is not None else base)
+            # Both incremental and absolute discounts are dollars off per case.
+            off = absd if absd is not None else (inc if inc is not None else 0)
+            rec = base - off
             line["cells"][str(e["week_number"])] = {
                 "week": e["week_number"],
                 "incremental_discount": inc,
