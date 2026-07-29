@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Sparkles, X, Send, Loader2, ChevronDown, ChevronRight, Database, AlertCircle } from 'lucide-react';
+import { Sparkles, X, Send, Loader2, ChevronDown, ChevronRight, Database, AlertCircle, Eraser } from 'lucide-react';
 import { api } from '../api';
 import type { GenieResult } from '../api';
 
@@ -53,6 +53,9 @@ export default function GenieChat() {
     }
   };
 
+  // Clear the conversation: wipe messages and start a fresh Genie thread on the next ask.
+  const clearChat = () => { setMsgs([]); setConvId(null); setInput(''); };
+
   return (
     <>
       {/* Floating trigger */}
@@ -76,6 +79,12 @@ export default function GenieChat() {
               <p className="text-sm font-bold text-[var(--text-primary)] leading-tight">Pricing Genie</p>
               <p className="text-[11px] text-[var(--text-secondary)] leading-tight">Natural-language questions over the governed data</p>
             </div>
+            {msgs.length > 0 && (
+              <button onClick={clearChat} disabled={busy} title="Clear chat"
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-40">
+                <Eraser className="w-3.5 h-3.5" /> Clear
+              </button>
+            )}
             <button onClick={() => setOpen(false)} className="p-1 rounded text-[var(--text-secondary)] hover:text-[var(--text-primary)]"><X className="w-5 h-5" /></button>
           </div>
 
@@ -107,7 +116,19 @@ export default function GenieChat() {
             )}
           </div>
 
-          <div className="shrink-0 p-3 border-t border-[var(--border)] flex items-center gap-2">
+          {/* Sample questions stay available throughout the conversation. */}
+          {ready && !spaceErr && msgs.length > 0 && (
+            <div className="shrink-0 px-3 pt-2.5 pb-0.5 border-t border-[var(--border)] flex gap-1.5 overflow-x-auto">
+              {suggestions.map((s) => (
+                <button key={s} onClick={() => ask(s)} disabled={busy} title={s}
+                  className="shrink-0 max-w-[14rem] truncate text-[11px] px-2.5 py-1 rounded-full bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-40 transition-colors">
+                  {s}
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div className={`shrink-0 p-3 flex items-center gap-2 ${msgs.length > 0 ? '' : 'border-t border-[var(--border)]'}`}>
             <input value={input} onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') ask(input); }}
               disabled={!ready || busy} placeholder={ready ? 'Ask a question…' : 'Connecting…'}
