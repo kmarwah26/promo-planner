@@ -202,6 +202,13 @@ export const api = {
     request<{ ok: boolean; reviewed: number }>('/planning/review', { method: 'POST', body: JSON.stringify({ sandbox_id, plan_year, line_keys, reviewed }) }),
   submitSandbox: (sandbox_id: string, plan_year: number) =>
     request<SubmitResult>('/planning/submit', { method: 'POST', body: JSON.stringify({ sandbox_id, plan_year }) }),
-  approveFinal: (q: { plan_year: number; wholesaler?: string; brand?: string; prc_group?: string }) =>
-    request<{ ok: boolean }>('/planning/approve', { method: 'POST', body: JSON.stringify(q) }),
+  approveFinal: (q: { sandbox_id: string; plan_year: number; wholesaler?: string; brand?: string; prc_group?: string }) =>
+    request<{ ok: boolean; approved: number; duration_ms: number }>('/planning/approve', { method: 'POST', body: JSON.stringify(q) }),
+  syncToUc: (sandbox_id: string, plan_year: number) =>
+    request<SubmitResult & { synced: number }>('/planning/sync-to-uc', { method: 'POST', body: JSON.stringify({ sandbox_id, plan_year }) }),
+  editEntireFilter: (body: {
+    sandbox_id: string; plan_year: number; wholesaler?: string; brand?: string; prc_group?: string;
+    kind: 'incremental' | 'absolute'; dollars: number; week_from: number; week_to: number;
+  }) => request<{ ok: boolean; written: number; lines: number; truncated: boolean }>(
+    '/planning/edit-filter', { method: 'POST', body: JSON.stringify(body) }),
 };

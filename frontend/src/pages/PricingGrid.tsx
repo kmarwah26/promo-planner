@@ -54,6 +54,10 @@ export default function PricingGrid({ tab }: { tab: PlanTab }) {
   const isFinal = tab === 'final';
   const { filters } = useFilters();
   const sandboxId = useMemo(getSandboxId, []);
+  // Both the builder and the Final Plan read the Lakebase sandbox overlay (so pending/
+  // approved edits show before they're synced to UC). 2026 reads pure production.
+  const readsSandbox = editable || isFinal;
+  const sbxRead = readsSandbox ? sandboxId : undefined;
 
   const [weeks, setWeeks] = useState<IsoWeek[]>([]);
   const [lines, setLines] = useState<GridLine[]>([]);
@@ -88,8 +92,8 @@ export default function PricingGrid({ tab }: { tab: PlanTab }) {
     setHasMore(true);
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
     setScrollTop(0);
-    const q = { plan_year: planYear, ...filterQ, limit: PAGE, offset: 0, sandbox_id: editable ? sandboxId : undefined };
-    Promise.all([api.getGrid(q), api.getBudget({ plan_year: planYear, ...filterQ, sandbox_id: editable ? sandboxId : undefined })])
+    const q = { plan_year: planYear, ...filterQ, limit: PAGE, offset: 0, sandbox_id: sbxRead };
+    Promise.all([api.getGrid(q), api.getBudget({ plan_year: planYear, ...filterQ, sandbox_id: sbxRead })])
       .then(([g, b]) => {
         setLines(g.lines);
         offsetRef.current = g.lines.length;
@@ -105,7 +109,7 @@ export default function PricingGrid({ tab }: { tab: PlanTab }) {
   const loadMore = useCallback(() => {
     if (loadingMore || !hasMore) return;
     setLoadingMore(true);
-    const q = { plan_year: planYear, ...filterQ, limit: PAGE, offset: offsetRef.current, sandbox_id: editable ? sandboxId : undefined };
+    const q = { plan_year: planYear, ...filterQ, limit: PAGE, offset: offsetRef.current, sandbox_id: sbxRead };
     api.getGrid(q).then((g) => {
       setLines((prev) => [...prev, ...g.lines]);
       offsetRef.current += g.lines.length;
@@ -149,16 +153,30 @@ export default function PricingGrid({ tab }: { tab: PlanTab }) {
         cells[String(wk)] = {
           week: wk, incremental_discount: inc, absolute_discount: absd,
           rec_pptr: recPptr(l.base_pptr, inc, absd),
-          approval_status: 'sandbox', source: 'sandbox',
+          approval_status: 'draft', source: 'sandbox',
         };
       }
       return { ...l, cells };
     }));
-    api.getBudget({ plan_year: planYear, ...filterQ, sandbox_id: editable ? sandboxId : undefined }).then(setBudget).catch(() => {});
+    api.getBudget({ plan_year: planYear, ...filterQ, sandbox_id: sbxRead }).then(setBudget).catch(() => {});
   };
 
   // ── Mass discount apply across selected rows × week range. ──
-  const applyDiscount = async (kind: 'incremental' | 'absolute', dollars: number, wkFrom: number, wkTo: number) => {
+  const applyDiscount = async (kind: 'incremental' | 'absolute', dollars: number, wkFrom: number, wkTo: number, scope: 'selected' | 'filter') => {
+    // Entire-filter scope: resolve + write server-side, then reload to show the result.
+    if (scope === 'filter') {
+      setBusy(true);
+      try {
+        const r = await api.editEntireFilter({
+          sandbox_id: sandboxId, plan_year: planYear, ...filterQ,
+          kind, dollars, week_from: wkFrom, week_to: wkTo,
+        });
+        setSubmitResult({ ok: true, submitted: r.written,
+          detail: `Applied to ${fmtInt(r.lines)} line(s)${r.truncated ? ' (capped at 50k)' : ''} across the whole filter` } as any);
+        reload();
+      } finally { setBusy(false); setPopup(null); }
+      return;
+    }
     const targets = lines.filter((l) => selected.has(l.line_key));
     if (!targets.length) return;
     setBusy(true);
@@ -229,12 +247,18 @@ export default function PricingGrid({ tab }: { tab: PlanTab }) {
     try { const r = await api.submitSandbox(sandboxId, planYear); setSubmitResult(r); reload(); }
     finally { setBusy(false); }
   };
-  // Final Submission: CSO approves the pending rows, the grid reloads to show them as
-  // approved, and the downstream (Pricing Hub) payload is returned in one step.
+  // Final Submission: fast, Lakebase-only approval (pending → approved). No UC write here.
   const finalSubmit = async () => {
     setBusy(true);
+    try { await api.approveFinal({ sandbox_id: sandboxId, plan_year: planYear, ...filterQ }); reload(); }
+    finally { setBusy(false); }
+  };
+  // Sync to UC: the separate, heavier flush of approved rows into the governed table.
+  const syncToUc = async () => {
+    setBusy(true);
     try {
-      await api.approveFinal({ plan_year: planYear, ...filterQ });
+      const r = await api.syncToUc(sandboxId, planYear);
+      setSubmitResult(r);
       const exp = await api.getFinalExport(filterQ);
       setFinalExport(exp);
       reload();
@@ -243,6 +267,7 @@ export default function PricingGrid({ tab }: { tab: PlanTab }) {
 
   const totalH = lines.length * ROW_H;
   const selCount = selected.size;
+  const hasActiveFilter = !!(filters.wholesaler || filters.brand || filters.prc_group);
 
   return (
     <div className="h-full flex flex-col">
@@ -264,11 +289,11 @@ export default function PricingGrid({ tab }: { tab: PlanTab }) {
             {editable && (
               <>
                 <span className="text-sm text-[var(--text-secondary)]">{selCount} selected</span>
-                <button disabled={!selCount || busy} onClick={() => setPopup('incremental')}
+                <button disabled={(!selCount && !hasActiveFilter) || busy} onClick={() => setPopup('incremental')}
                   className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-[var(--bg-secondary)] border border-[var(--border)] text-sm font-medium disabled:opacity-40 hover:border-[var(--accent)]">
                   <DollarSign className="w-4 h-4" /> Incremental $
                 </button>
-                <button disabled={!selCount || busy} onClick={() => setPopup('absolute')}
+                <button disabled={(!selCount && !hasActiveFilter) || busy} onClick={() => setPopup('absolute')}
                   className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-[var(--bg-secondary)] border border-[var(--border)] text-sm font-medium disabled:opacity-40 hover:border-[var(--accent)]">
                   <DollarSign className="w-4 h-4" /> Absolute $
                 </button>
@@ -287,10 +312,16 @@ export default function PricingGrid({ tab }: { tab: PlanTab }) {
               </>
             )}
             {isFinal && (
-              <button disabled={busy} onClick={finalSubmit}
-                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[var(--success)] hover:brightness-110 text-black text-sm font-semibold disabled:opacity-40">
-                {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />} Final Submission
-              </button>
+              <>
+                <button disabled={busy} onClick={finalSubmit} title="Approve pending rows (instant, in Lakebase)"
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[var(--success)] hover:brightness-110 text-black text-sm font-semibold disabled:opacity-40">
+                  {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />} Final Submission
+                </button>
+                <button disabled={busy} onClick={syncToUc} title="Flush approved rows into the governed Unity Catalog table (the one warehouse write) and hand off downstream"
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-black text-sm font-semibold disabled:opacity-40">
+                  <Database className="w-4 h-4" /> Sync to UC
+                </button>
+              </>
             )}
           </div>
         </div>
@@ -389,7 +420,8 @@ export default function PricingGrid({ tab }: { tab: PlanTab }) {
 
       {popup && (
         <DiscountPopup kind={popup} weeks={weeks} count={selCount}
-          onClose={() => setPopup(null)} onApply={(v, f, t) => applyDiscount(popup, v, f, t)} busy={busy} />
+          filterTotal={budget?.n_lines ?? 0} hasFilter={!!(filters.wholesaler || filters.brand || filters.prc_group)}
+          onClose={() => setPopup(null)} onApply={(v, f, t, scope) => applyDiscount(popup, v, f, t, scope)} busy={busy} />
       )}
     </div>
   );
@@ -407,12 +439,21 @@ function WeekCell({ line, week, cell, view, editable, isEditing, onStartEdit, on
   const depth = hasPromo ? cellDepth(line.base_pptr, cell!.incremental_discount, cell!.absolute_discount) : 0;
   const tint = hasPromo ? discountColor(depth) : 'transparent';
   const isSandbox = cell?.source === 'sandbox';
-  // Sandbox (just-edited) cells always get a visible accent fill so they never render
-  // dark/invisible when the discount depth is small (which makes the tint transparent).
-  const bg = isSandbox ? 'var(--accent-dim)' : tint;
+  const status = cell?.approval_status;
+  // Sandbox (in-Lakebase) cells get a fixed, always-visible fill colored by lifecycle
+  // status (draft/pending/approved) so the demo can see edits move through the flow —
+  // and so a small discount depth never renders dark/invisible on the dark canvas.
+  const sandboxFill: Record<string, string> = {
+    draft: 'var(--accent-dim)',
+    pending: 'rgba(226,167,46,0.34)',   // stronger gold — submitted for review
+    approved: 'rgba(74,222,128,0.28)',  // green — approved
+  };
+  const bg = isSandbox ? (sandboxFill[status || 'draft'] || 'var(--accent-dim)') : tint;
   // Dark text only reads on the light production tints; sandbox / transparent cells
   // use the normal light text so the value is always visible on the dark canvas.
-  const textColor = isSandbox ? 'var(--accent)' : (hasPromo && tint !== 'transparent' ? '#1a1206' : 'var(--text-primary)');
+  const textColor = isSandbox
+    ? (status === 'approved' ? 'var(--success)' : 'var(--accent)')
+    : (hasPromo && tint !== 'transparent' ? '#1a1206' : 'var(--text-primary)');
 
   // Every view shows a dollar amount.
   let text = '';
@@ -490,15 +531,22 @@ function BudgetBar({ budget, planYear, reviewedCount }: { budget: Budget | null;
   );
 }
 
-function DiscountPopup({ kind, weeks, count, onClose, onApply, busy }: {
+function DiscountPopup({ kind, weeks, count, filterTotal, hasFilter, onClose, onApply, busy }: {
   kind: 'incremental' | 'absolute'; weeks: IsoWeek[]; count: number;
-  onClose: () => void; onApply: (value: number, wkFrom: number, wkTo: number) => void; busy: boolean;
+  filterTotal: number; hasFilter: boolean;
+  onClose: () => void; onApply: (value: number, wkFrom: number, wkTo: number, scope: 'selected' | 'filter') => void; busy: boolean;
 }) {
   const [value, setValue] = useState(kind === 'incremental' ? 1.5 : 2.0);
   const [wkFrom, setWkFrom] = useState(1);
   const [wkTo, setWkTo] = useState(4);
+  // Offer the whole-filter scope only when it's meaningfully bigger than the selection.
+  const canFilterScope = filterTotal > count;
+  // Default to the whole-filter scope when nothing is selected but a filter is active.
+  const [scope, setScope] = useState<'selected' | 'filter'>(count === 0 && hasFilter ? 'filter' : 'selected');
   const maxWk = weeks.length || 52;
-  const apply = () => onApply(value, Math.min(wkFrom, wkTo), Math.max(wkFrom, wkTo));
+  const nWeeks = Math.abs(wkTo - wkFrom) + 1;
+  const targetLines = scope === 'filter' ? filterTotal : count;
+  const apply = () => onApply(value, Math.min(wkFrom, wkTo), Math.max(wkFrom, wkTo), scope);
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
       <div className="w-[26rem] rounded-2xl bg-[var(--bg-secondary)] p-6 border border-[var(--border)]" onClick={(e) => e.stopPropagation()} style={{ boxShadow: 'var(--shadow-lg)' }}>
@@ -506,7 +554,21 @@ function DiscountPopup({ kind, weeks, count, onClose, onApply, busy }: {
           <h3 className="text-lg font-bold text-[var(--text-primary)]">{kind === 'incremental' ? 'Incremental discount' : 'Absolute discount'}</h3>
           <button onClick={onClose} className="p-1 rounded text-[var(--text-secondary)] hover:text-[var(--text-primary)]"><X className="w-5 h-5" /></button>
         </div>
-        <p className="text-sm text-[var(--text-secondary)] mb-5">Apply to <span className="font-semibold text-[var(--text-primary)]">{count}</span> selected line{count === 1 ? '' : 's'} across the chosen week range.</p>
+
+        {/* Scope: selected (loaded) rows vs the entire filtered set */}
+        <label className="text-xs font-medium text-[var(--text-secondary)]">Apply to</label>
+        <div className="grid grid-cols-2 gap-2 mt-1.5 mb-4">
+          <button onClick={() => setScope('selected')}
+            className={`px-3 py-2 rounded-lg border text-sm text-left ${scope === 'selected' ? 'border-[var(--accent)] bg-[var(--accent-dim)] text-[var(--text-primary)]' : 'border-[var(--border)] text-[var(--text-secondary)]'}`}>
+            <div className="font-semibold">{fmtInt(count)} selected</div>
+            <div className="text-[10px] text-[var(--text-tertiary)]">loaded rows</div>
+          </button>
+          <button onClick={() => canFilterScope && setScope('filter')} disabled={!canFilterScope}
+            className={`px-3 py-2 rounded-lg border text-sm text-left disabled:opacity-40 ${scope === 'filter' ? 'border-[var(--accent)] bg-[var(--accent-dim)] text-[var(--text-primary)]' : 'border-[var(--border)] text-[var(--text-secondary)]'}`}>
+            <div className="font-semibold">Entire filter</div>
+            <div className="text-[10px] text-[var(--text-tertiary)]">{hasFilter ? `all ${fmtInt(filterTotal)} lines` : 'filter the grid first'}</div>
+          </button>
+        </div>
 
         <label className="text-xs font-medium text-[var(--text-secondary)]">Dollars off per case (subtracted from base REC PPTR)</label>
         <div className="flex items-center gap-2 mt-1.5 mb-5">
@@ -524,9 +586,14 @@ function DiscountPopup({ kind, weeks, count, onClose, onApply, busy }: {
           <span className="text-sm text-[var(--text-secondary)]">of {maxWk} weeks</span>
         </div>
 
+        <p className="text-[11px] text-[var(--text-secondary)] mb-4">
+          Writes ~<span className="font-semibold text-[var(--text-primary)]">{fmtInt(targetLines * nWeeks)}</span> cell(s)
+          ({fmtInt(targetLines)} line{targetLines === 1 ? '' : 's'} × {nWeeks} week{nWeeks === 1 ? '' : 's'}) to the Lakebase sandbox.
+        </p>
+
         <div className="flex justify-end gap-2">
           <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]">Cancel</button>
-          <button onClick={apply} disabled={busy || !count}
+          <button onClick={apply} disabled={busy || targetLines === 0}
             className="inline-flex items-center gap-1.5 px-5 py-2 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-black text-sm font-semibold disabled:opacity-40">
             {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />} Apply
           </button>

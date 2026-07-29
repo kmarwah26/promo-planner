@@ -32,10 +32,12 @@ CREATE TABLE IF NOT EXISTS plan_edit (
     week_number INT NOT NULL,
     incremental_discount DOUBLE PRECISION,
     absolute_discount DOUBLE PRECISION,
+    status TEXT NOT NULL DEFAULT 'draft',   -- draft | pending | approved (lifecycle, all in Lakebase)
     updated_by TEXT,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (sandbox_id, plan_year, wholesaler_id, brand_code, prc_code, week_number)
 );
+ALTER TABLE plan_edit ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'draft';
 CREATE INDEX IF NOT EXISTS idx_plan_edit_sandbox ON plan_edit (sandbox_id, plan_year);
 CREATE TABLE IF NOT EXISTS plan_activity (
     id TEXT PRIMARY KEY,
@@ -209,7 +211,7 @@ async def get_sandbox_edits(sandbox_id: str, plan_year: int) -> list[dict]:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT wholesaler_id, brand_code, prc_code, week_number,
-                          incremental_discount, absolute_discount
+                          incremental_discount, absolute_discount, status
                    FROM plan_edit WHERE sandbox_id = $1 AND plan_year = $2""",
                 sandbox_id, plan_year,
             )
@@ -217,7 +219,8 @@ async def get_sandbox_edits(sandbox_id: str, plan_year: int) -> list[dict]:
             {"wholesaler_id": r["wholesaler_id"], "brand_code": r["brand_code"],
              "prc_code": r["prc_code"], "week_number": r["week_number"],
              "incremental_discount": r["incremental_discount"],
-             "absolute_discount": r["absolute_discount"]}
+             "absolute_discount": r["absolute_discount"],
+             "status": r["status"]}
             for r in rows
         ]
     except Exception:
@@ -278,11 +281,12 @@ async def save_edits(req: EditRequest, request: Request):
             await conn.executemany(
                 """
                 INSERT INTO plan_edit (sandbox_id, plan_year, wholesaler_id, brand_code,
-                    prc_code, week_number, incremental_discount, absolute_discount, updated_by, updated_at)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+                    prc_code, week_number, incremental_discount, absolute_discount, status, updated_by, updated_at)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'draft',$9,$10)
                 ON CONFLICT (sandbox_id, plan_year, wholesaler_id, brand_code, prc_code, week_number)
                 DO UPDATE SET incremental_discount = EXCLUDED.incremental_discount,
                               absolute_discount = EXCLUDED.absolute_discount,
+                              status = 'draft',
                               updated_by = EXCLUDED.updated_by,
                               updated_at = EXCLUDED.updated_at
                 """,
@@ -306,6 +310,75 @@ async def save_edits(req: EditRequest, request: Request):
             "writes": writes,
         },
     }
+
+
+class EditFilterRequest(BaseModel):
+    sandbox_id: str
+    plan_year: int = 2027
+    wholesaler: str | None = None
+    brand: str | None = None
+    prc_group: str | None = None
+    kind: str = "incremental"          # 'incremental' | 'absolute'
+    dollars: float = 0.0               # $ off per case
+    week_from: int = 1
+    week_to: int = 52
+    max_lines: int = 50000             # safety cap for the demo
+
+
+@router.post("/planning/edit-filter")
+async def edit_entire_filter(req: EditFilterRequest, request: Request):
+    """Apply a discount to the ENTIRE filtered set (not just the loaded rows).
+
+    Resolves all matching line keys from Unity Catalog, then bulk-upserts a draft
+    edit for each line × week in the range into Lakebase. Returns how many cells
+    were written (and whether the line cap truncated the set)."""
+    await _ensure_tables()
+    pool = await db.get_pool()
+    if not pool:
+        raise HTTPException(status_code=503, detail="Lakebase not available — write-back disabled")
+
+    # Reuse pricing's filter builder for a consistent WHERE.
+    from server.routes.pricing import _line_where
+    where = _line_where(req.plan_year, req.wholesaler, req.brand, req.prc_group, alias="l")
+    rows = await run_query(request, f"""
+        SELECT wholesaler_id, brand_code, prc_code
+        FROM {FQ}.fact_price_plan l WHERE {where}
+        ORDER BY wholesaler_id, brand_code, prc_code
+        LIMIT {int(req.max_lines) + 1}
+    """)
+    truncated = len(rows) > req.max_lines
+    rows = rows[:req.max_lines]
+    wk_from, wk_to = min(req.week_from, req.week_to), max(req.week_from, req.week_to)
+    weeks = list(range(wk_from, wk_to + 1))
+    inc = req.dollars if req.kind == "incremental" else None
+    absd = req.dollars if req.kind == "absolute" else None
+
+    actor = _actor(request)
+    now = datetime.now(timezone.utc)
+    params = [
+        (req.sandbox_id, req.plan_year, r["wholesaler_id"], r["brand_code"], r["prc_code"],
+         wk, inc, absd, actor, now)
+        for r in rows for wk in weeks
+    ]
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.executemany(
+                """
+                INSERT INTO plan_edit (sandbox_id, plan_year, wholesaler_id, brand_code,
+                    prc_code, week_number, incremental_discount, absolute_discount, status, updated_by, updated_at)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'draft',$9,$10)
+                ON CONFLICT (sandbox_id, plan_year, wholesaler_id, brand_code, prc_code, week_number)
+                DO UPDATE SET incremental_discount = EXCLUDED.incremental_discount,
+                              absolute_discount = EXCLUDED.absolute_discount,
+                              status = 'draft',
+                              updated_by = EXCLUDED.updated_by,
+                              updated_at = EXCLUDED.updated_at
+                """,
+                params,
+            )
+            await _log(conn, req.sandbox_id, actor, "edit",
+                       f"{len(params)} cell(s) across {len(rows)} line(s) — {req.kind} discount (entire filter)")
+    return {"ok": True, "written": len(params), "lines": len(rows), "truncated": truncated}
 
 
 class ReviewRequest(BaseModel):
@@ -385,36 +458,128 @@ class SubmitRequest(BaseModel):
 
 @router.post("/planning/submit")
 async def submit_sandbox(req: SubmitRequest, request: Request):
-    """Promote sandbox edits → production.
+    """Submit for Review — a fast, Lakebase-only status flip: draft → pending.
 
-    MERGEs the Lakebase sandbox rows into UC `fact_promo_week` (status 'pending'),
-    recomputing rec_pptr from the line's base price, then clears the submitted
-    sandbox rows. Returns a write summary describing what was persisted where.
+    No Unity Catalog write happens here, so the whole edit→submit→approve loop stays
+    instant. The heavy flush to the governed UC table is a separate 'Sync to UC' step.
     """
     await _ensure_tables()
     pool = await db.get_pool()
     if not pool:
         raise HTTPException(status_code=503, detail="Lakebase not available — write-back disabled")
+    import time as _time
+    _t0 = _time.monotonic()
+    actor = _actor(request)
+    async with pool.acquire() as conn:
+        res = await conn.execute(
+            "UPDATE plan_edit SET status = 'pending', updated_by = $3, updated_at = NOW() "
+            "WHERE sandbox_id = $1 AND plan_year = $2 AND status = 'draft'",
+            req.sandbox_id, req.plan_year, actor,
+        )
+        n = int(res.split()[-1]) if res and res.split()[-1].isdigit() else 0
+        await _log(conn, req.sandbox_id, actor, "submit", f"Submitted {n} cell(s) for review (pending)")
+    ms = int((_time.monotonic() - _t0) * 1000)
+    return {
+        "ok": True,
+        "submitted": n,
+        "duration_ms": ms,
+        "detail": None if n else "Nothing new to submit",
+        "writes": [
+            {"target": "Lakebase", "table": "plan_edit", "operation": "UPDATE",
+             "detail": f"{n} cell(s) draft → pending ({ms}ms) — no UC write"},
+        ],
+    }
 
-    edits = await get_sandbox_edits(req.sandbox_id, req.plan_year)
-    if not edits:
-        return {"ok": True, "submitted": 0, "detail": "Nothing to submit"}
 
-    # Build a VALUES list to MERGE into UC. rec_pptr is derived from base_pptr in the
-    # target table (absolute overrides incremental).
+class ApproveRequest(BaseModel):
+    sandbox_id: str
+    plan_year: int = 2027
+    wholesaler: str | None = None
+    brand: str | None = None
+    prc_group: str | None = None
+
+
+def _edit_where(req) -> str:
+    clauses = ["status = 'pending'"]
+    if req.wholesaler:
+        ids = [w.strip().replace(chr(39), chr(39)*2) for w in str(req.wholesaler).split(",") if w.strip()]
+        if len(ids) == 1:
+            clauses.append(f"wholesaler_id = '{ids[0]}'")
+        elif ids:
+            clauses.append("wholesaler_id IN (" + ",".join(f"'{w}'" for w in ids) + ")")
+    if req.brand:
+        clauses.append(f"brand_code = '{req.brand.replace(chr(39), chr(39)*2)}'")
+    if req.prc_group:
+        clauses.append(f"prc_code = '{req.prc_group.replace(chr(39), chr(39)*2)}'")
+    return " AND ".join(clauses)
+
+
+@router.post("/planning/approve")
+async def approve_final(req: ApproveRequest, request: Request):
+    """Final Submission — fast, Lakebase-only status flip: pending → approved.
+
+    Still no UC write; approved rows land in the governed table only when you run
+    'Sync to UC'. Keeps the CSO approval instant."""
+    await _ensure_tables()
+    pool = await db.get_pool()
+    if not pool:
+        raise HTTPException(status_code=503, detail="Lakebase not available — write-back disabled")
+    import time as _time
+    _t0 = _time.monotonic()
+    actor = _actor(request)
+    where = _edit_where(req)
+    async with pool.acquire() as conn:
+        res = await conn.execute(
+            f"UPDATE plan_edit SET status = 'approved', updated_by = $3, updated_at = NOW() "
+            f"WHERE sandbox_id = $1 AND plan_year = $2 AND {where}",
+            req.sandbox_id, req.plan_year, actor,
+        )
+        n = int(res.split()[-1]) if res and res.split()[-1].isdigit() else 0
+        await _log(conn, req.sandbox_id, actor, "approve", f"Final Submission: approved {n} pending cell(s)")
+    ms = int((_time.monotonic() - _t0) * 1000)
+    return {"ok": True, "approved": n, "duration_ms": ms}
+
+
+class SyncRequest(BaseModel):
+    sandbox_id: str
+    plan_year: int = 2027
+
+
+@router.post("/planning/sync-to-uc")
+async def sync_to_uc(req: SyncRequest, request: Request):
+    """Separate re-sync: flush APPROVED Lakebase edits into the governed UC table.
+
+    This is the one heavy (warehouse) step, deliberately off the interactive path.
+    MERGEs approved plan_edit rows into fact_promo_week (status 'approved'), mirrors
+    them back into uc_promo_week_mirror, logs both sync directions, and clears the
+    flushed rows from the sandbox."""
+    await _ensure_tables()
+    pool = await db.get_pool()
+    if not pool:
+        raise HTTPException(status_code=503, detail="Lakebase not available — write-back disabled")
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT wholesaler_id, brand_code, prc_code, week_number,
+                      incremental_discount, absolute_discount
+               FROM plan_edit WHERE sandbox_id = $1 AND plan_year = $2 AND status = 'approved'""",
+            req.sandbox_id, req.plan_year,
+        )
+    if not rows:
+        return {"ok": True, "synced": 0, "detail": "No approved rows to sync"}
+
     def _v(x):
         return "NULL" if x is None else str(x)
     values = ",\n".join(
-        f"('{e['wholesaler_id']}','{e['brand_code']}','{e['prc_code']}',{int(e['week_number'])},"
-        f"{_v(e['incremental_discount'])},{_v(e['absolute_discount'])})"
-        for e in edits
+        f"('{r['wholesaler_id']}','{r['brand_code']}','{r['prc_code']}',{int(r['week_number'])},"
+        f"{_v(r['incremental_discount'])},{_v(r['absolute_discount'])})"
+        for r in rows
     )
     merge_sql = f"""
         MERGE INTO {FQ}.fact_promo_week t
         USING (
           SELECT s.wholesaler_id, s.brand_code, s.prc_code, s.week_number,
                  s.incremental_discount, s.absolute_discount,
-                 -- both discounts are dollars off per case
                  round(p.base_pptr - coalesce(s.absolute_discount, s.incremental_discount, 0), 2) AS rec_pptr
           FROM (VALUES {values})
             AS s(wholesaler_id, brand_code, prc_code, week_number, incremental_discount, absolute_discount)
@@ -428,98 +593,47 @@ async def submit_sandbox(req: SubmitRequest, request: Request):
           incremental_discount = s.incremental_discount,
           absolute_discount = s.absolute_discount,
           rec_pptr = s.rec_pptr,
-          approval_status = 'pending'
+          approval_status = 'approved'
         WHEN NOT MATCHED THEN INSERT
           (plan_year, wholesaler_id, brand_code, prc_code, week_number,
            incremental_discount, absolute_discount, rec_pptr, approval_status)
           VALUES ({int(req.plan_year)}, s.wholesaler_id, s.brand_code, s.prc_code, s.week_number,
-                  s.incremental_discount, s.absolute_discount, s.rec_pptr, 'pending')
+                  s.incremental_discount, s.absolute_discount, s.rec_pptr, 'approved')
     """
     import time as _time
+    actor = _actor(request)
     _t0 = _time.monotonic()
     await run_query(request, merge_sql)
-    _merge_ms = int((_time.monotonic() - _t0) * 1000)
-    actor = _actor(request)
+    merge_ms = int((_time.monotonic() - _t0) * 1000)
+    n = len(rows)
 
-    # Sync event 1: Lakebase → Unity Catalog (the edits we just MERGEd).
-    await _log_sync("Lakebase → Unity Catalog", "plan_edit (sandbox)", f"{FQ}.fact_promo_week",
-                    len(edits), _merge_ms, f"Submitted {len(edits)} cell(s) → status 'pending'", actor)
-    # Sync event 2: Unity Catalog → Lakebase (mirror the resulting rows back).
-    await mirror_uc_to_lakebase(request, edits, req.plan_year, actor)
+    cells = [{"wholesaler_id": r["wholesaler_id"], "brand_code": r["brand_code"],
+              "prc_code": r["prc_code"], "week_number": int(r["week_number"])} for r in rows]
 
-    # Clear the submitted sandbox rows and log.
+    await _log_sync("Lakebase → Unity Catalog", "plan_edit (approved)", f"{FQ}.fact_promo_week",
+                    n, merge_ms, f"Synced {n} approved cell(s) into the governed table", actor)
+    # Mirror the just-written rows back so both sides match.
+    await mirror_uc_to_lakebase(request, cells, req.plan_year, actor)
+
+    # Clear the flushed rows from the sandbox (they now live in UC).
     async with pool.acquire() as conn:
         await conn.execute(
-            "DELETE FROM plan_edit WHERE sandbox_id = $1 AND plan_year = $2",
+            "DELETE FROM plan_edit WHERE sandbox_id = $1 AND plan_year = $2 AND status = 'approved'",
             req.sandbox_id, req.plan_year,
         )
-        await conn.execute(
-            "DELETE FROM plan_review WHERE sandbox_id = $1 AND plan_year = $2",
-            req.sandbox_id, req.plan_year,
-        )
-        await _log(conn, req.sandbox_id, actor, "submit",
-                   f"Submitted {len(edits)} cell(s) to production (pending approval)")
+        await _log(conn, req.sandbox_id, actor, "sync", f"Synced {n} approved cell(s) to Unity Catalog ({merge_ms}ms)")
 
     return {
         "ok": True,
-        "submitted": len(edits),
+        "synced": n,
+        "duration_ms": merge_ms,
         "writes": [
             {"target": "Unity Catalog", "table": f"{FQ}.fact_promo_week",
-             "operation": "MERGE", "detail": f"{len(edits)} promo-week cell(s) → status 'pending'"},
-            {"target": "Lakebase", "table": "plan_edit",
-             "operation": "DELETE", "detail": "sandbox edits cleared after submit"},
+             "operation": "MERGE", "detail": f"{n} approved cell(s) → governed table ({merge_ms}ms)"},
+            {"target": "Lakebase", "table": "uc_promo_week_mirror",
+             "operation": "UPSERT", "detail": "mirrored back so both sides match"},
         ],
     }
-
-
-class ApproveRequest(BaseModel):
-    plan_year: int = 2027
-    wholesaler: str | None = None
-    brand: str | None = None
-    prc_group: str | None = None
-
-
-@router.post("/planning/approve")
-async def approve_final(req: ApproveRequest, request: Request):
-    """CSO approval: flip submitted 2027 rows from 'pending' to 'approved' (Final Plan)."""
-    clauses = [f"plan_year = {int(req.plan_year)}", "approval_status = 'pending'"]
-    if req.wholesaler:
-        ids = [w.strip().replace(chr(39), chr(39)*2) for w in str(req.wholesaler).split(",") if w.strip()]
-        if len(ids) == 1:
-            clauses.append(f"wholesaler_id = '{ids[0]}'")
-        elif ids:
-            clauses.append("wholesaler_id IN (" + ",".join(f"'{w}'" for w in ids) + ")")
-    if req.brand:
-        clauses.append(f"brand_code = '{req.brand.replace(chr(39), chr(39)*2)}'")
-    if req.prc_group:
-        clauses.append(f"prc_code = '{req.prc_group.replace(chr(39), chr(39)*2)}'")
-    where = " AND ".join(clauses)
-    # Capture the keys we're about to approve so we can mirror them back to Lakebase.
-    pending = await run_query(request, f"""
-        SELECT wholesaler_id, brand_code, prc_code, week_number
-        FROM {FQ}.fact_promo_week WHERE {where}
-    """)
-    import time as _time
-    _t0 = _time.monotonic()
-    await run_query(request, f"""
-        UPDATE {FQ}.fact_promo_week SET approval_status = 'approved' WHERE {where}
-    """)
-    _upd_ms = int((_time.monotonic() - _t0) * 1000)
-    actor = _actor(request)
-    n = len(pending)
-
-    pool = await db.get_pool()
-    if pool:
-        async with pool.acquire() as conn:
-            await _log(conn, "final", actor, "approve", f"Approved {n} row(s) where {where}")
-    # Sync events: the approval (Lakebase-driven action → UC) and the mirror back.
-    await _log_sync("Lakebase → Unity Catalog", "Final Submission (approve)", f"{FQ}.fact_promo_week",
-                    n, _upd_ms, f"Approved {n} pending row(s) → 'approved'", actor)
-    if pending:
-        cells = [{"wholesaler_id": r["wholesaler_id"], "brand_code": r["brand_code"],
-                  "prc_code": r["prc_code"], "week_number": int(_num_i(r["week_number"]))} for r in pending]
-        await mirror_uc_to_lakebase(request, cells, req.plan_year, actor)
-    return {"ok": True, "approved": n}
 
 
 @router.get("/planning/activity/recent")

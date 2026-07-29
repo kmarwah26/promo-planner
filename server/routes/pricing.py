@@ -184,12 +184,13 @@ async def grid(
             # Both incremental and absolute discounts are dollars off per case.
             off = absd if absd is not None else (inc if inc is not None else 0)
             rec = base - off
+            # The edit's lifecycle status (draft/pending/approved) lives in Lakebase.
             line["cells"][str(e["week_number"])] = {
                 "week": e["week_number"],
                 "incremental_discount": inc,
                 "absolute_discount": absd,
                 "rec_pptr": round(rec, 2),
-                "approval_status": "sandbox",
+                "approval_status": e.get("status") or "draft",
                 "source": "sandbox",
             }
 
