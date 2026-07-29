@@ -229,15 +229,16 @@ export default function PricingGrid({ tab }: { tab: PlanTab }) {
     try { const r = await api.submitSandbox(sandboxId, planYear); setSubmitResult(r); reload(); }
     finally { setBusy(false); }
   };
-  const approve = async () => {
+  // Final Submission: CSO approves the pending rows, the grid reloads to show them as
+  // approved, and the downstream (Pricing Hub) payload is returned in one step.
+  const finalSubmit = async () => {
     setBusy(true);
-    try { await api.approveFinal({ plan_year: planYear, ...filterQ }); reload(); }
-    finally { setBusy(false); }
-  };
-  const pushDownstream = async () => {
-    setBusy(true);
-    try { setFinalExport(await api.getFinalExport(filterQ)); }
-    finally { setBusy(false); }
+    try {
+      await api.approveFinal({ plan_year: planYear, ...filterQ });
+      const exp = await api.getFinalExport(filterQ);
+      setFinalExport(exp);
+      reload();
+    } finally { setBusy(false); }
   };
 
   const totalH = lines.length * ROW_H;
@@ -286,16 +287,10 @@ export default function PricingGrid({ tab }: { tab: PlanTab }) {
               </>
             )}
             {isFinal && (
-              <>
-                <button disabled={busy} onClick={approve}
-                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[var(--success)] hover:brightness-110 text-black text-sm font-semibold disabled:opacity-40">
-                  {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />} Final Submission
-                </button>
-                <button disabled={busy} onClick={pushDownstream}
-                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-black text-sm font-semibold disabled:opacity-40">
-                  <Download className="w-4 h-4" /> Push downstream
-                </button>
-              </>
+              <button disabled={busy} onClick={finalSubmit}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[var(--success)] hover:brightness-110 text-black text-sm font-semibold disabled:opacity-40">
+                {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />} Final Submission
+              </button>
             )}
           </div>
         </div>

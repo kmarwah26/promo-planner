@@ -32,12 +32,12 @@ def _esc(s: str) -> str:
 
 
 def _promo_table(plan_year: int) -> str:
-    """Per-week promo table to read/write for a plan year.
+    """Single source of truth for per-week promo rows across all plan years.
 
-    2027 uses the working plan table (fact_promo_week_plan) that the app edits and
-    approves; 2026 (and anything else) reads the original committed fact_promo_week.
+    Both plan years read and write the same governed table, so a Final Submission
+    (approval) is immediately visible everywhere in the app.
     """
-    return "fact_promo_week_plan" if int(plan_year) == 2027 else "fact_promo_week"
+    return "fact_promo_week"
 
 
 @router.get("/pricing/filters")
@@ -324,7 +324,7 @@ async def final_plan_export(
                pw.week_number, pw.incremental_discount, pw.absolute_discount,
                pw.rec_pptr, pw.approval_status
         FROM {FQ}.fact_price_plan l
-        JOIN {FQ}.fact_promo_week_plan pw
+        JOIN {FQ}.fact_promo_week pw
           ON pw.plan_year = l.plan_year AND pw.wholesaler_id = l.wholesaler_id
          AND pw.brand_code = l.brand_code AND pw.prc_code = l.prc_code
         WHERE {where} AND pw.approval_status = 'approved'
@@ -348,9 +348,7 @@ _UC_TABLES = [
     {"table": "fact_price_plan", "grain": "plan_year × wholesaler × brand × PRC group",
      "purpose": "The dense grid lines — every wholesale price line with its base REC PPTR and current max discount. This is the 'row' the business counts (~1.3M in prod)."},
     {"table": "fact_promo_week", "grain": "line × ISO week",
-     "purpose": "Committed history — the original per-week promo overrides. Read-only; backs the '2026 Promotions Ran' tab. The app never writes here."},
-    {"table": "fact_promo_week_plan", "grain": "line × ISO week",
-     "purpose": "Working 2027 plan — where the app writes. Submit MERGEs edits here as 'pending'; Final Submission flips them to 'approved'. Seeded from the 2027 rows of fact_promo_week."},
+     "purpose": "Single source of truth for per-week promo overrides (dollars off + resulting REC PPTR) with approval_status: committed (2026), pending (submitted), approved (Final Plan). Submit MERGEs edits here; Final Submission flips them to 'approved' — visible immediately in the app."},
     {"table": "dim_wholesaler", "grain": "wholesaler", "purpose": "Wholesaler / distributor reference (id, name, region, state)."},
     {"table": "dim_brand", "grain": "brand", "purpose": "Brand code → brand name."},
     {"table": "dim_prc_group", "grain": "PRC group", "purpose": "Product/pack group with QD thresholds and deal description."},

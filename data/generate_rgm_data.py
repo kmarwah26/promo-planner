@@ -235,23 +235,11 @@ def build_statements(lines: int = 200_000, prc_per_brand: int = 4) -> list[tuple
           END AS approval_status
         FROM exploded
     """))
-
-    # ── fact_promo_week_plan: the working 2027 PLAN table. ──
-    # This is where the app writes edited/approved 2027 pricing (Submit MERGEs here,
-    # Approve flips status here). Seeded from the 2027 rows of fact_promo_week so the
-    # Plan Builder / Final Plan start from the current plan; the original
-    # fact_promo_week stays read-only (it still backs the "2026 Promotions Ran" tab).
-    stmts.append(("drop fact_promo_week_plan", f"DROP TABLE IF EXISTS {FQ}.fact_promo_week_plan"))
-    stmts.append(("fact_promo_week_plan", f"""
-        CREATE TABLE {FQ}.fact_promo_week_plan
-        COMMENT 'Working 2027 plan: per-week promo overrides written by the app (Submit/Approve). Seeded from the 2027 rows of fact_promo_week; the original stays read-only. Discounts are dollars off per case.'
-        AS SELECT * FROM {FQ}.fact_promo_week WHERE plan_year = 2027
-    """))
     return stmts
 
 
 TABLES = ["dim_iso_week", "dim_brand", "dim_prc_group", "dim_wholesaler",
-          "fact_price_plan", "fact_promo_week", "fact_promo_week_plan"]
+          "fact_price_plan", "fact_promo_week"]
 
 
 def _run_with_sdk(profile: str, warehouse_id: str, lines: int, prc_per_brand: int):
