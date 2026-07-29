@@ -404,3 +404,57 @@ async def recent_activity():
         ],
         "db_available": True,
     }
+
+
+# Descriptions of the Lakebase sandbox tables, shown in the "How Lakebase is used" panel.
+_LAKEBASE_TABLES = [
+    {"table": "plan_edit",
+     "purpose": "In-progress 2027 discount edits, one row per (sandbox, line, week). Written on every cell edit / mass apply; overlaid on the grid at read time; cleared on Submit or Reset."},
+    {"table": "plan_review",
+     "purpose": "Per-line 'reviewed' flags set by regional coordinators before submission (per-row and bulk). Cleared on Submit or Reset."},
+    {"table": "plan_activity",
+     "purpose": "Append-only audit log of every edit, review, reset, submit and approve — who did what, when."},
+]
+
+
+@router.get("/planning/lakebase-info")
+async def lakebase_info():
+    """Live snapshot of how Lakebase (Postgres) is being used: connection details,
+    the sandbox tables with their purpose and current row counts, and a recent
+    activity feed. Powers the 'How Lakebase is used' side panel."""
+    await _ensure_tables()
+    host = os.environ.get("PGHOST", "")
+    info = {
+        "engine": "Lakebase (managed Postgres)",
+        "instance": os.environ.get("LAKEBASE_INSTANCE", "lakebase-demo"),
+        "database": os.environ.get("PGDATABASE", "promo_planner"),
+        "host": host,
+        "role": "app service principal",
+        "status": "disconnected",
+        "role_summary": "Low-latency operational store for in-progress edits — the sandbox layer, separate from the governed analytical data in Unity Catalog.",
+        "tables": [dict(t, rows=None) for t in _LAKEBASE_TABLES],
+        "activity": [],
+    }
+    pool = await db.get_pool()
+    if not pool:
+        return info
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute("SELECT 1")
+            info["status"] = "connected"
+            for t in info["tables"]:
+                try:
+                    t["rows"] = await conn.fetchval(f"SELECT count(*) FROM {t['table']}")
+                except Exception:
+                    t["rows"] = None
+            rows = await conn.fetch(
+                "SELECT actor, action, detail, created_at FROM plan_activity ORDER BY created_at DESC LIMIT 8"
+            )
+            info["activity"] = [
+                {"actor": r["actor"], "action": r["action"], "detail": r["detail"],
+                 "created_at": r["created_at"].isoformat()}
+                for r in rows
+            ]
+    except Exception as e:
+        info["status"] = f"error: {e}"
+    return info

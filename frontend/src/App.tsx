@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react';
-import { CalendarRange, User } from 'lucide-react';
+import { CalendarRange, User, Database, Server } from 'lucide-react';
 import { api } from './api';
 import type { CurrentUser } from './api';
 import PricingGrid from './pages/PricingGrid';
+import InfoPanel from './components/InfoPanel';
+import type { PanelKind } from './components/InfoPanel';
 import type { PlanTab } from './store';
 
 const TABS: { id: PlanTab; label: string }[] = [
@@ -14,6 +16,7 @@ const TABS: { id: PlanTab; label: string }[] = [
 export default function App() {
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [tab, setTab] = useState<PlanTab>('builder2027');
+  const [panel, setPanel] = useState<PanelKind | null>(null);
 
   useEffect(() => {
     api.getCurrentUser().then(setUser).catch(() => {});
@@ -44,7 +47,7 @@ export default function App() {
               onClick={() => setTab(t.id)}
               className={`px-3.5 py-1.5 rounded-full text-sm font-medium transition-colors ${
                 tab === t.id
-                  ? 'bg-[var(--accent)] text-white shadow-sm'
+                  ? 'bg-[var(--accent)] text-black shadow-sm'
                   : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
               }`}
             >
@@ -53,7 +56,19 @@ export default function App() {
           ))}
         </nav>
 
-        <div className="ml-auto flex items-center gap-2.5 px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)]">
+        {/* Architecture info triggers */}
+        <div className="ml-auto flex items-center gap-1.5">
+          <button onClick={() => setPanel('lakebase')} title="How Lakebase stores & updates in-progress edits"
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors">
+            <Database className="w-4 h-4 text-[var(--accent)]" /> <span className="hidden lg:inline">Lakebase</span>
+          </button>
+          <button onClick={() => setPanel('catalog')} title="How the main pricing records are stored in Unity Catalog"
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors">
+            <Server className="w-4 h-4 text-[var(--accent)]" /> <span className="hidden lg:inline">Main records</span>
+          </button>
+        </div>
+
+        <div className="flex items-center gap-2.5 px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)]">
           <div className="w-6 h-6 rounded-full flex items-center justify-center" style={{ background: 'var(--grad-brand)' }}>
             {user ? <span className="text-[9px] font-bold text-white">{initials}</span> : <User className="w-3 h-3 text-white" />}
           </div>
@@ -67,6 +82,8 @@ export default function App() {
       <main className="flex-1 overflow-hidden">
         <PricingGrid tab={tab} />
       </main>
+
+      {panel && <InfoPanel kind={panel} onClose={() => setPanel(null)} />}
     </div>
   );
 }

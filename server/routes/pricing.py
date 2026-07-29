@@ -11,7 +11,7 @@ The grid grain is one line = (plan_year, wholesaler_id, brand_code, prc_code); t
 overlaid on top of the committed/production data at read time.
 """
 from fastapi import APIRouter, Request, Query
-from server.routes.sql_exec import run_query, FQ
+from server.routes.sql_exec import run_query, FQ, PROMO_CATALOG, PROMO_SCHEMA, DEFAULT_WAREHOUSE_ID
 
 router = APIRouter(tags=["pricing"])
 
@@ -324,4 +324,50 @@ async def final_plan_export(
         "status": "approved",
         "count": len(rows),
         "pricing": rows,
+    }
+
+
+# Production ("main records") tables in Unity Catalog, for the info panel.
+_UC_TABLES = [
+    {"table": "fact_price_plan", "grain": "plan_year × wholesaler × brand × PRC group",
+     "purpose": "The dense grid lines — every wholesale price line with its base REC PPTR and current max discount. This is the 'row' the business counts (~1.3M in prod)."},
+    {"table": "fact_promo_week", "grain": "line × ISO week",
+     "purpose": "Sparse per-week promo overrides (dollars off + resulting REC PPTR) with approval_status: committed (2026), pending (submitted), approved (Final Plan)."},
+    {"table": "dim_wholesaler", "grain": "wholesaler", "purpose": "Wholesaler / distributor reference (id, name, region, state)."},
+    {"table": "dim_brand", "grain": "brand", "purpose": "Brand code → brand name."},
+    {"table": "dim_prc_group", "grain": "PRC group", "purpose": "Product/pack group with QD thresholds and deal description."},
+    {"table": "dim_iso_week", "grain": "week", "purpose": "The 52 ISO weeks that form the grid's column axis."},
+]
+
+
+@router.get("/pricing/catalog-info")
+async def catalog_info(request: Request):
+    """Live snapshot of how the 'main' pricing records are stored in Unity Catalog:
+    catalog/schema/warehouse, the production tables with purpose and current row
+    counts, and the sandbox→submit→approve lifecycle. Powers the 'Main records' panel."""
+    counts: dict[str, int] = {}
+    try:
+        union = " UNION ALL ".join(
+            f"SELECT '{t['table']}' AS tbl, count(*) AS n FROM {FQ}.{t['table']}" for t in _UC_TABLES
+        )
+        rows = await run_query(request, union)
+        for r in rows:
+            counts[r["tbl"]] = int(_num(r["n"]))
+        status = "connected"
+    except Exception as e:
+        status = f"error: {e}"
+    return {
+        "engine": "Unity Catalog (Delta) via Databricks SQL",
+        "catalog": PROMO_CATALOG,
+        "schema": PROMO_SCHEMA,
+        "warehouse_id": DEFAULT_WAREHOUSE_ID,
+        "status": status,
+        "role_summary": "Governed system of record for all pricing. Grid reads come from here; approved changes are the source of truth handed downstream.",
+        "tables": [dict(t, rows=counts.get(t["table"])) for t in _UC_TABLES],
+        "lifecycle": [
+            {"stage": "Edit", "where": "Lakebase (sandbox)", "detail": "Coordinators edit cells; nothing in UC changes yet."},
+            {"stage": "Submit for Review", "where": "→ Unity Catalog", "detail": "Sandbox edits MERGE into fact_promo_week as approval_status = 'pending'."},
+            {"stage": "Final Submission", "where": "Unity Catalog", "detail": "CSO approval flips rows to 'approved' — the Final Plan."},
+            {"stage": "Downstream", "where": "GET /api/pricing/final", "detail": "Approved rows served as JSON to the Pricing Hub."},
+        ],
     }

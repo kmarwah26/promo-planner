@@ -135,6 +135,29 @@ export interface FinalExport {
   pricing: Record<string, any>[];
 }
 
+export interface LakebaseInfo {
+  engine: string;
+  instance: string;
+  database: string;
+  host: string;
+  role: string;
+  status: string;
+  role_summary: string;
+  tables: { table: string; purpose: string; rows: number | null }[];
+  activity: { actor: string; action: string; detail: string; created_at: string }[];
+}
+
+export interface CatalogInfo {
+  engine: string;
+  catalog: string;
+  schema: string;
+  warehouse_id: string;
+  status: string;
+  role_summary: string;
+  tables: { table: string; grain: string; purpose: string; rows: number | null }[];
+  lifecycle: { stage: string; where: string; detail: string }[];
+}
+
 export type GridQuery = {
   plan_year: number;
   wholesaler?: string;
@@ -164,6 +187,10 @@ export const api = {
     request<Budget>(`/pricing/budget${qs(q)}`),
   getFinalExport: (q: { wholesaler?: string; brand?: string; prc_group?: string } = {}) =>
     request<FinalExport>(`/pricing/final${qs(q)}`),
+  getCatalogInfo: () => request<CatalogInfo>('/pricing/catalog-info'),
+
+  // Architecture info panels
+  getLakebaseInfo: () => request<LakebaseInfo>('/planning/lakebase-info'),
 
   // Planning write-back (Lakebase sandbox + UC production)
   saveEdits: (sandbox_id: string, plan_year: number, edits: CellEdit[]) =>
