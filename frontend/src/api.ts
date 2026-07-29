@@ -145,6 +145,7 @@ export interface LakebaseInfo {
   role_summary: string;
   tables: { table: string; purpose: string; rows: number | null }[];
   activity: { actor: string; action: string; detail: string; created_at: string }[];
+  syncs: { direction: string; source: string; target: string; rows: number; duration_ms: number | null; detail: string; created_at: string }[];
 }
 
 export interface CatalogInfo {

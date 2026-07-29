@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { X, Database, Server, RefreshCw, ArrowRight, CheckCircle2, AlertCircle, Table2 } from 'lucide-react';
+import { X, Database, Server, RefreshCw, ArrowRight, ArrowLeftRight, CheckCircle2, AlertCircle, Table2 } from 'lucide-react';
 import { api } from '../api';
 import type { LakebaseInfo, CatalogInfo } from '../api';
 import { fmtInt } from '../format';
@@ -124,6 +124,40 @@ function LakebaseBody({ onClose }: { onClose: () => void }) {
                       <span className="text-[10px] text-[var(--text-tertiary)] shrink-0">{new Date(a.created_at).toLocaleTimeString()}</span>
                     </div>
                   ))}
+                </div>
+              )}
+            </section>
+
+            <section>
+              <h3 className="text-[11px] font-semibold uppercase tracking-wide text-[var(--text-secondary)] mb-2 flex items-center gap-1.5">
+                <ArrowLeftRight className="w-3.5 h-3.5 text-[var(--accent)]" /> UC ↔ Lakebase syncs
+              </h3>
+              {info.syncs.length === 0 ? (
+                <p className="text-xs text-[var(--text-secondary)]">No syncs yet — Submit or Final Submission moves rows both ways and logs them here.</p>
+              ) : (
+                <div className="space-y-2">
+                  {info.syncs.map((s, i) => {
+                    const toUC = s.direction.startsWith('Lakebase');
+                    return (
+                      <div key={i} className="rounded-lg border border-[var(--border)] p-2.5">
+                        <div className="flex items-center justify-between">
+                          <span className={`inline-flex items-center gap-1 text-[11px] font-semibold ${toUC ? 'text-[var(--accent)]' : 'text-[var(--success)]'}`}>
+                            {toUC ? <Database className="w-3 h-3" /> : <Server className="w-3 h-3" />}
+                            {s.direction}
+                          </span>
+                          <span className="text-[10px] text-[var(--text-tertiary)]">{new Date(s.created_at).toLocaleTimeString()}</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 text-[10px] text-[var(--text-secondary)] font-mono mt-1">
+                          <span className="truncate">{s.source}</span>
+                          <ArrowRight className="w-3 h-3 shrink-0" />
+                          <span className="truncate">{s.target}</span>
+                        </div>
+                        <p className="text-xs text-[var(--text-primary)] mt-1">{s.detail}
+                          <span className="text-[var(--text-tertiary)]"> · {fmtInt(s.rows)} row(s){s.duration_ms != null ? ` · ${s.duration_ms}ms` : ''}</span>
+                        </p>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </section>

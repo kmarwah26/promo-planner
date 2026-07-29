@@ -405,8 +405,14 @@ function WeekCell({ line, week, cell, view, editable, isEditing, onStartEdit, on
 }) {
   const hasPromo = !!cell && (cell.incremental_discount != null || cell.absolute_discount != null);
   const depth = hasPromo ? cellDepth(line.base_pptr, cell!.incremental_discount, cell!.absolute_discount) : 0;
-  const bg = hasPromo ? discountColor(depth) : 'transparent';
+  const tint = hasPromo ? discountColor(depth) : 'transparent';
   const isSandbox = cell?.source === 'sandbox';
+  // Sandbox (just-edited) cells always get a visible accent fill so they never render
+  // dark/invisible when the discount depth is small (which makes the tint transparent).
+  const bg = isSandbox ? 'var(--accent-dim)' : tint;
+  // Dark text only reads on the light production tints; sandbox / transparent cells
+  // use the normal light text so the value is always visible on the dark canvas.
+  const textColor = isSandbox ? 'var(--accent)' : (hasPromo && tint !== 'transparent' ? '#1a1206' : 'var(--text-primary)');
 
   // Every view shows a dollar amount.
   let text = '';
@@ -435,7 +441,7 @@ function WeekCell({ line, week, cell, view, editable, isEditing, onStartEdit, on
   return (
     <div onClick={editable ? onStartEdit : undefined}
       className={`flex items-center justify-center border-r border-b border-[var(--border)] text-[13px] tabular-nums ${editable ? 'cursor-pointer hover:ring-1 hover:ring-inset hover:ring-[var(--accent)]' : ''} ${isSandbox ? 'ring-2 ring-inset ring-[var(--accent)] font-semibold' : ''}`}
-      style={{ width: CELL_W, background: bg, color: hasPromo ? '#1a1206' : undefined }} title={tip}>
+      style={{ width: CELL_W, background: bg, color: textColor }} title={tip}>
       {text}
     </div>
   );
