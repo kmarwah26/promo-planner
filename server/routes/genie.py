@@ -15,7 +15,7 @@ import asyncio
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
-from server.config import get_workspace_host, get_auth_headers, get_workspace_client
+from server.config import get_workspace_host, get_auth_headers, get_workspace_client, OBO_REAUTH_MESSAGE
 from server.routes.sql_exec import FQ, DEFAULT_WAREHOUSE_ID
 
 router = APIRouter(tags=["genie"])
@@ -144,8 +144,11 @@ async def resolve_space(request: Request):
             _space_id = data.get("space_id") or data.get("id")
             return {"space_id": _space_id, "title": SPACE_TITLE, "suggestions": SUGGESTIONS, "created": True}
         except httpx.HTTPStatusError as e:
+            code = e.response.status_code if e.response else 500
+            if code == 403:
+                raise HTTPException(status_code=403, detail=OBO_REAUTH_MESSAGE)
             detail = e.response.text if e.response else str(e)
-            raise HTTPException(status_code=e.response.status_code, detail=f"Could not create Genie space: {detail}")
+            raise HTTPException(status_code=code, detail=f"Could not create Genie space: {detail}")
 
 
 class MessageRequest(BaseModel):
@@ -154,13 +157,21 @@ class MessageRequest(BaseModel):
 
 @router.post("/genie/conversations")
 async def start_conversation(req: MessageRequest, request: Request):
-    space_id = await _require_space(request)
+    global _space_id
     host, headers = _client(request)
     async with httpx.AsyncClient(timeout=90) as client:
-        resp = await client.post(
-            f"{host}{API_PREFIX}/{space_id}/start-conversation",
-            headers=headers, json={"content": req.content},
-        )
+        # Try the cached space; if it's gone/inaccessible for this (OBO) user, drop the
+        # cache and re-resolve once as them, then retry.
+        for attempt in range(2):
+            space_id = await _require_space(request)
+            resp = await client.post(
+                f"{host}{API_PREFIX}/{space_id}/start-conversation",
+                headers=headers, json={"content": req.content},
+            )
+            if resp.status_code == 404 and attempt == 0:
+                _space_id = None
+                continue
+            break
         _raise(resp)
         data = resp.json()
         cid, mid = data.get("conversation_id", ""), data.get("message_id", "")
@@ -194,6 +205,8 @@ async def _require_space(request: Request) -> str:
 
 
 def _raise(resp):
+    if resp.status_code == 403:
+        raise HTTPException(status_code=403, detail=OBO_REAUTH_MESSAGE)
     if resp.status_code >= 400:
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
 

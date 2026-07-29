@@ -29,12 +29,14 @@ resources:
       database: promo_planner
 
 env:
-  # Run user-facing Databricks calls as the logged-in user once consent is confirmed.
-  # Service-principal mode: all Databricks calls run as the app SP, which has been
-  # granted warehouse CAN_USE, UC SELECT on promo_planning, and Genie CAN_RUN. This
-  # avoids per-user OAuth re-consent for the demo. Flip to "true" for on-behalf-of-user.
+  # On-behalf-of-user: user-facing Databricks calls (Unity Catalog grid reads, the
+  # Sync-to-UC MERGE, and Genie) run as the logged-in user via their forwarded OAuth
+  # token, so they use that user's own permissions. The Lakebase sandbox write-back
+  # stays on the service principal. NOTE: each user must consent to the app's
+  # user_authorization scopes on first sign-in; if scopes change later, existing users
+  # must sign out and back in to re-authorize (see OBO_REAUTH_MESSAGE).
   - name: OBO_ENABLED
-    value: "false"
+    value: "true"
   # Lakebase (write-back) connection — instance + database resolved from the resource above.
   - name: LAKEBASE_INSTANCE
     value: "lakebase-demo"
