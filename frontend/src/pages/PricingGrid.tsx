@@ -280,7 +280,7 @@ export default function PricingGrid({ tab }: { tab: PlanTab }) {
                 </button>
                 <button disabled={busy} onClick={submit}
                   className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-black text-sm font-semibold disabled:opacity-40">
-                  {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />} Submit to production
+                  {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />} Submit for Review
                 </button>
               </>
             )}
@@ -288,7 +288,7 @@ export default function PricingGrid({ tab }: { tab: PlanTab }) {
               <>
                 <button disabled={busy} onClick={approve}
                   className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[var(--success)] hover:brightness-110 text-black text-sm font-semibold disabled:opacity-40">
-                  {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />} Approve pending
+                  {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />} Final Submission
                 </button>
                 <button disabled={busy} onClick={pushDownstream}
                   className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-black text-sm font-semibold disabled:opacity-40">

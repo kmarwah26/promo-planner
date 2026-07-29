@@ -274,8 +274,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--profile", default="fevm-serverless")
     ap.add_argument("--warehouse", default="")
-    ap.add_argument("--lines", type=int, default=200_000,
-                    help="Approx. number of grid lines PER plan year (default 200000).")
+    ap.add_argument("--lines", type=int, default=500_000,
+                    help="Approx. number of grid lines PER plan year (default 500000 → ~1M total).")
     ap.add_argument("--prc-per-brand", type=int, default=4,
                     help="PRC groups generated per brand (default 4).")
     ap.add_argument("--emit", action="store_true",

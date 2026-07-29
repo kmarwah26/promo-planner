@@ -19,7 +19,7 @@ The live demo is deployed on the **fevm-serverless** workspace:
 # Generate the wholesale pricing tables in Unity Catalog.
 # --lines sets the approximate grid-line count per plan year (default 200000);
 # scale it up toward ~1.3M for the full latency story.
-python data/generate_rgm_data.py --profile <profile> --warehouse <warehouse_id> --lines 200000
+python data/generate_rgm_data.py --profile <profile> --warehouse <warehouse_id> --lines 500000
 ```
 
 This writes to `serverless_razks1_catalog.promo_planning` (override with `CATALOG`/`SCHEMA`

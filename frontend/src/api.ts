@@ -4,6 +4,9 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   let resp: Response;
   try {
     resp = await fetch(`${BASE}${path}`, {
+      // no-store so GETs (e.g. the grid) always reflect the latest sandbox state —
+      // e.g. immediately after a Reset — instead of a browser-cached page.
+      cache: 'no-store',
       headers: { 'Content-Type': 'application/json', ...options?.headers },
       ...options,
     });
