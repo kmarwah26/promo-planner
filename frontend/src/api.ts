@@ -159,6 +159,27 @@ export interface CatalogInfo {
   lifecycle: { stage: string; where: string; detail: string }[];
 }
 
+export interface GenieSpace {
+  space_id: string;
+  title: string;
+  suggestions: string[];
+  created: boolean;
+}
+
+export interface GenieResult {
+  status: string;
+  query: string;         // generated SQL
+  text: string;          // natural-language answer
+  columns: string[];
+  rows: any[][];
+}
+
+export interface GenieReply {
+  conversation_id: string;
+  message_id: string;
+  result: GenieResult;
+}
+
 export type GridQuery = {
   plan_year: number;
   wholesaler?: string;
@@ -211,4 +232,11 @@ export const api = {
     kind: 'incremental' | 'absolute'; dollars: number; week_from: number; week_to: number;
   }) => request<{ ok: boolean; written: number; lines: number; truncated: boolean }>(
     '/planning/edit-filter', { method: 'POST', body: JSON.stringify(body) }),
+
+  // Genie chat over the pricing data
+  genieSpace: () => request<GenieSpace>('/genie/space'),
+  genieStart: (content: string) =>
+    request<GenieReply>('/genie/conversations', { method: 'POST', body: JSON.stringify({ content }) }),
+  genieSend: (conversationId: string, content: string) =>
+    request<GenieReply>(`/genie/conversations/${conversationId}/messages`, { method: 'POST', body: JSON.stringify({ content }) }),
 };

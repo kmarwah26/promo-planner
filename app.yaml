@@ -19,6 +19,7 @@ user_authorization:
     - catalog.catalogs # Unity Catalog: list catalogs
     - catalog.schemas  # Unity Catalog: list schemas
     - catalog.tables   # Unity Catalog: list tables + columns
+    - dashboards.genie # Genie space: create/list + conversations
 
 resources:
   - name: promo-planner-db

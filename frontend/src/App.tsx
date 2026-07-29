@@ -4,6 +4,7 @@ import { api } from './api';
 import type { CurrentUser } from './api';
 import PricingGrid from './pages/PricingGrid';
 import InfoPanel from './components/InfoPanel';
+import GenieChat from './components/GenieChat';
 import type { PanelKind } from './components/InfoPanel';
 import type { PlanTab } from './store';
 
@@ -84,6 +85,7 @@ export default function App() {
       </main>
 
       {panel && <InfoPanel kind={panel} onClose={() => setPanel(null)} />}
+      <GenieChat />
     </div>
   );
 }

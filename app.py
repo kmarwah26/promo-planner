@@ -3,7 +3,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import os
 
-from server.routes import catalog, warehouses, user, pricing, planning
+from server.routes import catalog, warehouses, user, pricing, planning, genie
 
 app = FastAPI(title="Promo 1YP — Wholesale Pricing Planner")
 
@@ -12,6 +12,7 @@ app.include_router(warehouses.router, prefix="/api")
 app.include_router(user.router, prefix="/api")
 app.include_router(pricing.router, prefix="/api")
 app.include_router(planning.router, prefix="/api")
+app.include_router(genie.router, prefix="/api")
 
 
 @app.get("/api/db-health")
