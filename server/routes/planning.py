@@ -370,7 +370,11 @@ async def approve_final(req: ApproveRequest, request: Request):
     """CSO approval: flip submitted 2027 rows from 'pending' to 'approved' (Final Plan)."""
     clauses = [f"plan_year = {int(req.plan_year)}", "approval_status = 'pending'"]
     if req.wholesaler:
-        clauses.append(f"wholesaler_id = '{req.wholesaler.replace(chr(39), chr(39)*2)}'")
+        ids = [w.strip().replace(chr(39), chr(39)*2) for w in str(req.wholesaler).split(",") if w.strip()]
+        if len(ids) == 1:
+            clauses.append(f"wholesaler_id = '{ids[0]}'")
+        elif ids:
+            clauses.append("wholesaler_id IN (" + ",".join(f"'{w}'" for w in ids) + ")")
     if req.brand:
         clauses.append(f"brand_code = '{req.brand.replace(chr(39), chr(39)*2)}'")
     if req.prc_group:

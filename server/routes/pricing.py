@@ -76,7 +76,13 @@ def _line_where(plan_year, wholesaler, brand, prc, alias=""):
     p = f"{alias}." if alias else ""
     clauses = [f"{p}plan_year = {int(plan_year)}"]
     if wholesaler:
-        clauses.append(f"{p}wholesaler_id = '{_esc(wholesaler)}'")
+        # wholesaler may be a comma-separated list (multi-select) → IN (...).
+        ids = [w.strip() for w in str(wholesaler).split(",") if w.strip()]
+        if len(ids) == 1:
+            clauses.append(f"{p}wholesaler_id = '{_esc(ids[0])}'")
+        elif ids:
+            in_list = ",".join(f"'{_esc(w)}'" for w in ids)
+            clauses.append(f"{p}wholesaler_id IN ({in_list})")
     if brand:
         clauses.append(f"{p}brand_code = '{_esc(brand)}'")
     if prc:
@@ -238,8 +244,9 @@ async def budget(
     # Fold in sandbox edits (respecting the same filters).
     from server.routes.planning import get_sandbox_edits
     edits = await get_sandbox_edits(sandbox_id, plan_year)
+    ws_set = {w.strip() for w in str(wholesaler).split(",") if w.strip()} if wholesaler else None
     edits = [e for e in edits
-             if (not wholesaler or e["wholesaler_id"] == wholesaler)
+             if (not ws_set or e["wholesaler_id"] in ws_set)
              and (not brand or e["brand_code"] == brand)
              and (not prc_group or e["prc_code"] == prc_group)]
     if not edits:
