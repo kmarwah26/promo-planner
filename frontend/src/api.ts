@@ -160,7 +160,7 @@ export const api = {
   getFilters: () => request<PricingFilters>('/pricing/filters'),
   getWeeks: () => request<{ weeks: IsoWeek[] }>('/pricing/weeks'),
   getGrid: (q: GridQuery) => request<GridPage>(`/pricing/grid${qs(q)}`),
-  getBudget: (q: Omit<GridQuery, 'limit' | 'offset' | 'sandbox_id'>) =>
+  getBudget: (q: Omit<GridQuery, 'limit' | 'offset'>) =>
     request<Budget>(`/pricing/budget${qs(q)}`),
   getFinalExport: (q: { wholesaler?: string; brand?: string; prc_group?: string } = {}) =>
     request<FinalExport>(`/pricing/final${qs(q)}`),

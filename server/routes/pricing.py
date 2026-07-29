@@ -189,12 +189,15 @@ async def budget(
     wholesaler: str | None = None,
     brand: str | None = None,
     prc_group: str | None = None,
+    sandbox_id: str | None = None,
 ):
     """Portfolio budget roll-up over the filtered set, for the always-on budget bar.
 
     Total discount $ = sum(base_pptr - rec_pptr) over promo weeks; plus line count,
-    promo-week count, and lines-on-promo. One cheap aggregate query (not paged).
-    """
+    promo-week count, and lines-on-promo. Production numbers come from one cheap UC
+    aggregate; when a sandbox is supplied, its in-progress edits are folded in so the
+    budget moves live as cells are modified (a sandbox edit replaces production for the
+    same line+week; a new week adds one)."""
     lwhere = _line_where(plan_year, wholesaler, brand, prc_group, alias="l")
     agg = await run_query(request, f"""
         WITH lines AS (
@@ -213,7 +216,75 @@ async def budget(
          AND pw.brand_code = l.brand_code AND pw.prc_code = l.prc_code
     """)
     r = agg[0] if agg else {}
-    return {k: _num(v) for k, v in r.items()}
+    out = {
+        "n_lines": _num(r.get("n_lines")) or 0,
+        "n_promo_weeks": _num(r.get("n_promo_weeks")) or 0,
+        "n_lines_on_promo": _num(r.get("n_lines_on_promo")) or 0,
+        "total_discount": _num(r.get("total_discount")) or 0.0,
+        "avg_incremental_discount": _num(r.get("avg_incremental_discount")) or 0.0,
+    }
+    if not sandbox_id:
+        return out
+
+    # Fold in sandbox edits (respecting the same filters).
+    from server.routes.planning import get_sandbox_edits
+    edits = await get_sandbox_edits(sandbox_id, plan_year)
+    edits = [e for e in edits
+             if (not wholesaler or e["wholesaler_id"] == wholesaler)
+             and (not brand or e["brand_code"] == brand)
+             and (not prc_group or e["prc_code"] == prc_group)]
+    if not edits:
+        return out
+
+    # For each edited cell, look up the line's base_pptr, any existing production
+    # rec_pptr (to know if we're replacing a week), and the line's total production
+    # promo-week count (to know if the line was already "on promo").
+    vals = ",".join(
+        f"('{_esc(e['wholesaler_id'])}','{_esc(e['brand_code'])}','{_esc(e['prc_code'])}',{int(e['week_number'])})"
+        for e in edits
+    )
+    rows = await run_query(request, f"""
+        WITH s AS (
+          SELECT * FROM (VALUES {vals}) AS s(wholesaler_id, brand_code, prc_code, week_number)
+        )
+        SELECT s.wholesaler_id, s.brand_code, s.prc_code, s.week_number,
+               p.base_pptr, pw.rec_pptr AS old_rec,
+               (SELECT count(*) FROM {FQ}.fact_promo_week x
+                 WHERE x.plan_year = {int(plan_year)} AND x.wholesaler_id = s.wholesaler_id
+                   AND x.brand_code = s.brand_code AND x.prc_code = s.prc_code) AS line_prod_weeks
+        FROM s
+        JOIN {FQ}.fact_price_plan p
+          ON p.plan_year = {int(plan_year)} AND p.wholesaler_id = s.wholesaler_id
+         AND p.brand_code = s.brand_code AND p.prc_code = s.prc_code
+        LEFT JOIN {FQ}.fact_promo_week pw
+          ON pw.plan_year = {int(plan_year)} AND pw.wholesaler_id = s.wholesaler_id
+         AND pw.brand_code = s.brand_code AND pw.prc_code = s.prc_code AND pw.week_number = s.week_number
+    """)
+    meta = {(r["wholesaler_id"], r["brand_code"], r["prc_code"], int(_num(r["week_number"]))): r for r in rows}
+
+    total = out["total_discount"]
+    n_weeks = out["n_promo_weeks"]
+    new_promo_lines: set[tuple] = set()
+    for e in edits:
+        key = (e["wholesaler_id"], e["brand_code"], e["prc_code"], int(e["week_number"]))
+        m = meta.get(key)
+        if not m:
+            continue
+        base = _num(m["base_pptr"]) or 0.0
+        old_rec = _num(m["old_rec"])
+        new_off = e["absolute_discount"] if e["absolute_discount"] is not None else (e["incremental_discount"] or 0.0)
+        old_off = (base - old_rec) if old_rec is not None else 0.0
+        total += new_off - old_off
+        if old_rec is None:
+            n_weeks += 1                       # a brand-new promo week
+            if (_num(m["line_prod_weeks"]) or 0) == 0:
+                new_promo_lines.add((e["wholesaler_id"], e["brand_code"], e["prc_code"]))
+
+    out["total_discount"] = round(total, 2)
+    out["n_promo_weeks"] = n_weeks
+    out["n_lines_on_promo"] = out["n_lines_on_promo"] + len(new_promo_lines)
+    out["avg_incremental_discount"] = round(total / n_weeks, 4) if n_weeks else 0.0
+    return out
 
 
 @router.get("/pricing/final")

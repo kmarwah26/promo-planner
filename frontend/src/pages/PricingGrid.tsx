@@ -89,7 +89,7 @@ export default function PricingGrid({ tab }: { tab: PlanTab }) {
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
     setScrollTop(0);
     const q = { plan_year: planYear, ...filterQ, limit: PAGE, offset: 0, sandbox_id: editable ? sandboxId : undefined };
-    Promise.all([api.getGrid(q), api.getBudget({ plan_year: planYear, ...filterQ })])
+    Promise.all([api.getGrid(q), api.getBudget({ plan_year: planYear, ...filterQ, sandbox_id: editable ? sandboxId : undefined })])
       .then(([g, b]) => {
         setLines(g.lines);
         offsetRef.current = g.lines.length;
@@ -154,7 +154,7 @@ export default function PricingGrid({ tab }: { tab: PlanTab }) {
       }
       return { ...l, cells };
     }));
-    api.getBudget({ plan_year: planYear, ...filterQ }).then(setBudget).catch(() => {});
+    api.getBudget({ plan_year: planYear, ...filterQ, sandbox_id: editable ? sandboxId : undefined }).then(setBudget).catch(() => {});
   };
 
   // ── Mass discount apply across selected rows × week range. ──
@@ -184,22 +184,23 @@ export default function PricingGrid({ tab }: { tab: PlanTab }) {
   };
 
   // ── Inline single-cell edit. The value entered depends on the active view. ──
-  const commitCellEdit = async (line: GridLine, week: number, raw: string) => {
+  const commitCellEdit = (line: GridLine, week: number, raw: string) => {
     setEditing(null);
-    const val = parseFloat(raw);
+    const trimmed = (raw ?? '').trim();
+    if (trimmed === '') return;                          // empty → cancel, keep prior value
+    const val = parseFloat(trimmed);
     if (isNaN(val)) return;
     let inc: number | null = null, absd: number | null = null;
     if (view === 'incremental') inc = val;               // dollars off
     else if (view === 'absolute') absd = val;            // dollars off
     else absd = +(line.base_pptr - val).toFixed(2);      // REC PPTR view: entered price → $ off
-    const edit: CellEdit = {
+    // Apply the optimistic overlay immediately so the cell shows the new value even if
+    // the network is slow; the save runs in the background.
+    overlayCells((l) => l.line_key === line.line_key, [week], inc, absd);
+    api.saveEdits(sandboxId, planYear, [{
       wholesaler_id: line.wholesaler_id, brand_code: line.brand_code, prc_code: line.prc_code,
       week_number: week, incremental_discount: inc, absolute_discount: absd,
-    };
-    try {
-      await api.saveEdits(sandboxId, planYear, [edit]);
-      overlayCells((l) => l.line_key === line.line_key, [week], inc, absd);
-    } catch { /* surfaced by api layer */ }
+    }]).catch(() => reload());                           // on failure, resync from server
   };
 
   // ── Review (per-row + bulk) ──
@@ -429,14 +430,7 @@ function WeekCell({ line, week, cell, view, editable, isEditing, onStartEdit, on
     : `${week.iso_label} ${week.date_range_label}${editable ? ' · click to add a discount' : ''}`;
 
   if (isEditing) {
-    return (
-      <div className="flex items-center justify-center border-r border-b border-[var(--border)]" style={{ width: CELL_W, background: 'var(--bg-hover)' }}>
-        <input autoFocus defaultValue={editInit} type="number" step={0.25}
-          onBlur={(e) => onCommit(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') onCommit((e.target as HTMLInputElement).value); if (e.key === 'Escape') onCancel(); }}
-          className="w-full h-full text-center text-[13px] tabular-nums bg-transparent text-[var(--text-primary)] outline-none ring-2 ring-inset ring-[var(--accent)] rounded-sm px-0.5" />
-      </div>
-    );
+    return <CellEditor init={editInit} onCommit={onCommit} onCancel={onCancel} />;
   }
 
   return (
@@ -444,6 +438,26 @@ function WeekCell({ line, week, cell, view, editable, isEditing, onStartEdit, on
       className={`flex items-center justify-center border-r border-b border-[var(--border)] text-[13px] tabular-nums ${editable ? 'cursor-pointer hover:ring-1 hover:ring-inset hover:ring-[var(--accent)]' : ''} ${isSandbox ? 'ring-2 ring-inset ring-[var(--accent)] font-semibold' : ''}`}
       style={{ width: CELL_W, background: bg, color: hasPromo ? '#1a1206' : undefined }} title={tip}>
       {text}
+    </div>
+  );
+}
+
+// Inline numeric editor. Guards against the Enter→blur double-commit (Enter fires
+// onCommit, which unmounts this input and would otherwise fire onBlur a second time).
+function CellEditor({ init, onCommit, onCancel }: { init: string; onCommit: (raw: string) => void; onCancel: () => void }) {
+  const done = useRef(false);
+  const commit = (raw: string) => { if (done.current) return; done.current = true; onCommit(raw); };
+  const cancel = () => { if (done.current) return; done.current = true; onCancel(); };
+  return (
+    <div className="flex items-center justify-center border-r border-b border-[var(--border)]" style={{ width: CELL_W, background: 'var(--bg-hover)' }}>
+      <input autoFocus defaultValue={init} type="number" step={0.25}
+        onFocus={(e) => e.currentTarget.select()}
+        onBlur={(e) => commit(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') { e.preventDefault(); commit((e.target as HTMLInputElement).value); }
+          else if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+        }}
+        className="w-full h-full text-center text-[13px] tabular-nums bg-transparent text-[var(--text-primary)] outline-none ring-2 ring-inset ring-[var(--accent)] rounded-sm px-0.5" />
     </div>
   );
 }
