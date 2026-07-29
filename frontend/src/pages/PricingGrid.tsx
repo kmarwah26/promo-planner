@@ -420,17 +420,21 @@ function WeekCell({ line, week, cell, view, editable, isEditing, onStartEdit, on
     else text = fmtPrice(cellOff(cell!.incremental_discount, cell!.absolute_discount)); // $ off
   }
 
-  // Initial value shown in the editor for the active view.
-  const editInit = view === 'rec_pptr'
-    ? fmtPrice(cell?.rec_pptr ?? line.base_pptr)
-    : (hasPromo ? fmtPrice(cellOff(cell!.incremental_discount, cell!.absolute_discount)) : '');
+  // Editor seed: for an existing promo, prefill the current value for the active view.
+  // For a BLANK cell, open empty (placeholder only) so the user types their own value
+  // instead of seeing the base price / a stale number.
+  const editInit = !hasPromo ? ''
+    : view === 'rec_pptr' ? fmtPrice(cell!.rec_pptr)
+    : fmtPrice(cellOff(cell!.incremental_discount, cell!.absolute_discount));
+  // Placeholder hint: in REC PPTR view show the base price; otherwise "$ off".
+  const editPlaceholder = view === 'rec_pptr' ? fmtPrice(line.base_pptr) : '$ off';
 
   const tip = hasPromo
     ? `${line.plan_year}-${week.iso_label} ${week.date_range_label} · $${fmtPrice(cellOff(cell!.incremental_discount, cell!.absolute_discount))} off · REC PPTR $${fmtPrice(cell!.rec_pptr)}${isSandbox ? ' (sandbox)' : cell!.approval_status ? ` (${cell!.approval_status})` : ''}`
     : `${week.iso_label} ${week.date_range_label}${editable ? ' · click to add a discount' : ''}`;
 
   if (isEditing) {
-    return <CellEditor init={editInit} onCommit={onCommit} onCancel={onCancel} />;
+    return <CellEditor init={editInit} placeholder={editPlaceholder} onCommit={onCommit} onCancel={onCancel} />;
   }
 
   return (
@@ -444,13 +448,13 @@ function WeekCell({ line, week, cell, view, editable, isEditing, onStartEdit, on
 
 // Inline numeric editor. Guards against the Enter→blur double-commit (Enter fires
 // onCommit, which unmounts this input and would otherwise fire onBlur a second time).
-function CellEditor({ init, onCommit, onCancel }: { init: string; onCommit: (raw: string) => void; onCancel: () => void }) {
+function CellEditor({ init, placeholder, onCommit, onCancel }: { init: string; placeholder?: string; onCommit: (raw: string) => void; onCancel: () => void }) {
   const done = useRef(false);
   const commit = (raw: string) => { if (done.current) return; done.current = true; onCommit(raw); };
   const cancel = () => { if (done.current) return; done.current = true; onCancel(); };
   return (
     <div className="flex items-center justify-center border-r border-b border-[var(--border)]" style={{ width: CELL_W, background: 'var(--bg-hover)' }}>
-      <input autoFocus defaultValue={init} type="number" step={0.25}
+      <input autoFocus defaultValue={init} placeholder={placeholder} type="number" step={0.25}
         onFocus={(e) => e.currentTarget.select()}
         onBlur={(e) => commit(e.target.value)}
         onKeyDown={(e) => {

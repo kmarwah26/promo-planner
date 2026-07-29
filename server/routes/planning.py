@@ -7,8 +7,9 @@ Catalog, where the CSO team **approves** them for the Final Plan.
 - Sandbox edits (per-cell incremental/absolute discounts) live in Lakebase for
   fast, multi-user, in-progress editing. Multiple users can edit concurrently;
   each edit records who made it.
-- Submit MERGEs the sandbox rows into UC `fact_promo_week` (plan_year 2027,
-  status 'pending') and clears them from the sandbox.
+- Submit MERGEs the sandbox rows into UC `fact_promo_week_plan` (the working 2027
+  plan table, status 'pending') and clears them from the sandbox. The original
+  `fact_promo_week` stays read-only.
 - Approve flips submitted 2027 rows to 'approved' (Final Plan).
 - Reset clears all sandbox edits for a filter (the "revert all" button).
 """
@@ -282,7 +283,7 @@ class SubmitRequest(BaseModel):
 async def submit_sandbox(req: SubmitRequest, request: Request):
     """Promote sandbox edits → production.
 
-    MERGEs the Lakebase sandbox rows into UC `fact_promo_week` (status 'pending'),
+    MERGEs the Lakebase sandbox rows into UC `fact_promo_week_plan` (status 'pending'),
     recomputing rec_pptr from the line's base price, then clears the submitted
     sandbox rows. Returns a write summary describing what was persisted where.
     """
@@ -305,7 +306,7 @@ async def submit_sandbox(req: SubmitRequest, request: Request):
         for e in edits
     )
     merge_sql = f"""
-        MERGE INTO {FQ}.fact_promo_week t
+        MERGE INTO {FQ}.fact_promo_week_plan t
         USING (
           SELECT s.wholesaler_id, s.brand_code, s.prc_code, s.week_number,
                  s.incremental_discount, s.absolute_discount,
@@ -349,7 +350,7 @@ async def submit_sandbox(req: SubmitRequest, request: Request):
         "ok": True,
         "submitted": len(edits),
         "writes": [
-            {"target": "Unity Catalog", "table": f"{FQ}.fact_promo_week",
+            {"target": "Unity Catalog", "table": f"{FQ}.fact_promo_week_plan",
              "operation": "MERGE", "detail": f"{len(edits)} promo-week cell(s) → status 'pending'"},
             {"target": "Lakebase", "table": "plan_edit",
              "operation": "DELETE", "detail": "sandbox edits cleared after submit"},
@@ -376,7 +377,7 @@ async def approve_final(req: ApproveRequest, request: Request):
         clauses.append(f"prc_code = '{req.prc_group.replace(chr(39), chr(39)*2)}'")
     where = " AND ".join(clauses)
     await run_query(request, f"""
-        UPDATE {FQ}.fact_promo_week SET approval_status = 'approved' WHERE {where}
+        UPDATE {FQ}.fact_promo_week_plan SET approval_status = 'approved' WHERE {where}
     """)
     pool = await db.get_pool()
     if pool:

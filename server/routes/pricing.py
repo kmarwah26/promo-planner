@@ -31,6 +31,15 @@ def _esc(s: str) -> str:
     return s.replace("'", "''")
 
 
+def _promo_table(plan_year: int) -> str:
+    """Per-week promo table to read/write for a plan year.
+
+    2027 uses the working plan table (fact_promo_week_plan) that the app edits and
+    approves; 2026 (and anything else) reads the original committed fact_promo_week.
+    """
+    return "fact_promo_week_plan" if int(plan_year) == 2027 else "fact_promo_week"
+
+
 @router.get("/pricing/filters")
 async def get_filters(request: Request):
     """Distinct values for the three filter dropdowns: wholesaler, brand, PRC group."""
@@ -108,7 +117,7 @@ async def grid(
         SELECT p.*, pw.week_number, pw.incremental_discount, pw.absolute_discount,
                pw.rec_pptr, pw.approval_status
         FROM page p
-        LEFT JOIN {FQ}.fact_promo_week pw
+        LEFT JOIN {FQ}.{_promo_table(plan_year)} pw
           ON pw.plan_year = p.plan_year AND pw.wholesaler_id = p.wholesaler_id
          AND pw.brand_code = p.brand_code AND pw.prc_code = p.prc_code
         ORDER BY p.wholesaler_id, p.brand_code, p.prc_code, pw.week_number
@@ -211,7 +220,7 @@ async def budget(
           round(sum(l.base_pptr - pw.rec_pptr), 2) AS total_discount,
           round(avg(pw.incremental_discount), 4) AS avg_incremental_discount
         FROM lines l
-        JOIN {FQ}.fact_promo_week pw
+        JOIN {FQ}.{_promo_table(plan_year)} pw
           ON pw.plan_year = {int(plan_year)} AND pw.wholesaler_id = l.wholesaler_id
          AND pw.brand_code = l.brand_code AND pw.prc_code = l.prc_code
     """)
@@ -249,14 +258,14 @@ async def budget(
         )
         SELECT s.wholesaler_id, s.brand_code, s.prc_code, s.week_number,
                p.base_pptr, pw.rec_pptr AS old_rec,
-               (SELECT count(*) FROM {FQ}.fact_promo_week x
+               (SELECT count(*) FROM {FQ}.{_promo_table(plan_year)} x
                  WHERE x.plan_year = {int(plan_year)} AND x.wholesaler_id = s.wholesaler_id
                    AND x.brand_code = s.brand_code AND x.prc_code = s.prc_code) AS line_prod_weeks
         FROM s
         JOIN {FQ}.fact_price_plan p
           ON p.plan_year = {int(plan_year)} AND p.wholesaler_id = s.wholesaler_id
          AND p.brand_code = s.brand_code AND p.prc_code = s.prc_code
-        LEFT JOIN {FQ}.fact_promo_week pw
+        LEFT JOIN {FQ}.{_promo_table(plan_year)} pw
           ON pw.plan_year = {int(plan_year)} AND pw.wholesaler_id = s.wholesaler_id
          AND pw.brand_code = s.brand_code AND pw.prc_code = s.prc_code AND pw.week_number = s.week_number
     """)
@@ -308,7 +317,7 @@ async def final_plan_export(
                pw.week_number, pw.incremental_discount, pw.absolute_discount,
                pw.rec_pptr, pw.approval_status
         FROM {FQ}.fact_price_plan l
-        JOIN {FQ}.fact_promo_week pw
+        JOIN {FQ}.fact_promo_week_plan pw
           ON pw.plan_year = l.plan_year AND pw.wholesaler_id = l.wholesaler_id
          AND pw.brand_code = l.brand_code AND pw.prc_code = l.prc_code
         WHERE {where} AND pw.approval_status = 'approved'
@@ -332,7 +341,9 @@ _UC_TABLES = [
     {"table": "fact_price_plan", "grain": "plan_year × wholesaler × brand × PRC group",
      "purpose": "The dense grid lines — every wholesale price line with its base REC PPTR and current max discount. This is the 'row' the business counts (~1.3M in prod)."},
     {"table": "fact_promo_week", "grain": "line × ISO week",
-     "purpose": "Sparse per-week promo overrides (dollars off + resulting REC PPTR) with approval_status: committed (2026), pending (submitted), approved (Final Plan)."},
+     "purpose": "Committed history — the original per-week promo overrides. Read-only; backs the '2026 Promotions Ran' tab. The app never writes here."},
+    {"table": "fact_promo_week_plan", "grain": "line × ISO week",
+     "purpose": "Working 2027 plan — where the app writes. Submit MERGEs edits here as 'pending'; Final Submission flips them to 'approved'. Seeded from the 2027 rows of fact_promo_week."},
     {"table": "dim_wholesaler", "grain": "wholesaler", "purpose": "Wholesaler / distributor reference (id, name, region, state)."},
     {"table": "dim_brand", "grain": "brand", "purpose": "Brand code → brand name."},
     {"table": "dim_prc_group", "grain": "PRC group", "purpose": "Product/pack group with QD thresholds and deal description."},
